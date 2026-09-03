@@ -1,0 +1,21 @@
+body {
+  background-color: #f8f9fa;
+  font-family: 'Segoe UI', sans-serif;
+}
+.login-box-wrapper {
+  padding: 6px;
+  border-radius: 30px;
+  background: linear-gradient(135deg, #ff6b6b, #fcb045, #1dd1a1, #54a0ff, #5f27cd);
+}
+.login-box {
+  background-color: white;            
+  border-radius: 25px;         
+}
+.welcome-text {
+  font-size: 2.2rem;
+  font-weight: 700;
+  background: linear-gradient(90deg, #ff6b6b, #fcb045, #1dd1a1);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+

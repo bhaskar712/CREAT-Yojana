@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Dashboard | Deskify</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+      rel="stylesheet" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+
+    <style>
+      /* Page-specific styles - navbar styles are handled by navbar.js */
+
+      .main-content {
+        padding: 30px;
+        background: rgba(255, 255, 255, 0.05);
+        min-height: calc(100vh - 100px);
+      }
+
+      .dashboard-title {
+        font-size: 1.5rem;
+        font-weight: 800;
+        margin-bottom: 24px;
+        color: #333; 
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .dashboard-title::before {
+        content: "📊";
+        font-size: 1.2rem;
+        animation: pulse 2s infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          transform: scale(1);
+        }
+        50% {
+          transform: scale(1.1);
+        }
+      }
+
+      .dashboard-title::after {
+        content: "";
+        position: absolute;
+        bottom: -10px;
+        left: 0;
+        width: 80px;
+        height: 4px;
+        background: linear-gradient(90deg, #fff, rgba(255, 255, 255, 0.3));
+        border-radius: 2px;
+        box-shadow: 0 2px 10px rgba(255, 255, 255, 0.3);
+      }
+
+      .loading-spinner {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 2px solid #f3f3f3;
+        border-top: 2px solid #007bff;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-left: 10px;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      .stats-container {
+        position: relative;
+      }
+
+      .stats-loading {
+        opacity: 0.6;
+        pointer-events: none;
+      }
+
+      .card {
+        border-radius: 20px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        text-align: center;
+        padding: 30px 25px;
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(15px);
+        width: 100%;
+        max-width: 240px;
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        position: relative;
+        overflow: hidden;
+      }
+
+      .card::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 5px;
+        background: linear-gradient(90deg, #667eea, #764ba2);
+        border-radius: 20px 20px 0 0;
+      }
+
+      .card::after {
+        content: "";
+        position: absolute;
+        top: -50%;
+        left: -50%;
+        width: 200%;
+        height: 200%;
+        background: linear-gradient(
+          45deg,
+          transparent,
+          rgba(255, 255, 255, 0.1),
+          transparent
+        );
+        transform: rotate(45deg);
+        transition: all 0.6s;
+        opacity: 0;
+      }
+
+      .card:hover {
+        transform: translateY(-10px) scale(1.02);
+        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+      }
+
+      .card:hover::after {
+        opacity: 1;
+        top: -100%;
+        left: -100%;
+      }
+
+      .card h5 {
+        font-size: 1rem;
+        color: #666;
+        font-weight: 600;
+        margin-bottom: 15px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        position: relative;
+        z-index: 2;
+      }
+
+      .card h2 {
+        font-size: 2.8rem;
+        color: #333;
+        margin-top: 10px;
+        font-weight: 800;
+        background: linear-gradient(135deg, #667eea, #764ba2);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        position: relative;
+        z-index: 2;
+        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      }
+
+      .card i {
+        opacity: 0.8;
+        transition: all 0.3s ease;
+      }
+
+      .card:hover i {
+        opacity: 1;
+        transform: scale(1.1);
+      }
+
+      .main-content-container {
+        padding: 20px;
+      }
+
+      .main-content-container h2 {
+        font-size: 24px;
+        margin-bottom: 8px;
+      }
+
+      .main-content-container p {
+        font-size: 14px;
+        margin-top: 0;
+      }
+
+      /* Sidebar styles are handled by navbar.js */
+      .dashboard-header {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 20px;
+      }
+
+      @media (min-width: 768px) {
+        .dashboard-header {
+          flex-direction: row;
+          align-items: center;
+        }
+
+        .dashboard-header .dropdown-wrapper {
+          margin-left: auto;
+        }
+      }
+      @media (max-width: 767px) {
+        .d-flex.flex-wrap .card {
+          flex: 1 1 100%;
+          max-width: 100%;
+          margin-bottom: 15px;
+        }
+      }
+
+      @media (min-width: 768px) {
+        .dashboard-header {
+          flex-direction: row;
+          align-items: center;
+        }
+      }
+
+      .department-dropdown {
+        padding: 12px 16px;
+        font-size: 15px;
+        border-radius: 10px;
+        border: 2px solid #e9ecef;
+        min-width: 220px;
+        background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+        color: #495057;
+        font-weight: 500;
+        transition: all 0.3s ease;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+        cursor: pointer;
+      }
+
+      .department-dropdown:focus {
+        outline: none;
+        border-color: #007bff;
+        box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+        transform: translateY(-1px);
+      }
+
+      .department-dropdown:hover {
+        border-color: #007bff;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+      }
+      /* Chart Cards Styling */
+      .chart-card {
+        background: rgba(255, 255, 255, 0.95);
+        backdrop-filter: blur(15px);
+        border-radius: 20px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        transition: all 0.3s ease;
+        overflow: hidden;
+        height: 100%;
+      }
+
+      .chart-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+      }
+
+      .chart-header {
+        padding: 25px 25px 15px 25px;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+        background: linear-gradient(
+          135deg,
+          rgba(102, 126, 234, 0.05),
+          rgba(118, 75, 162, 0.05)
+        );
+      }
+
+      .chart-header h5 {
+        margin: 0;
+        font-size: 1.2rem;
+        font-weight: 600;
+        color: #333;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .chart-header h5 i {
+        color: #667eea;
+      }
+
+      .chart-header p {
+        margin: 5px 0 0 0;
+        font-size: 0.9rem;
+        color: #666;
+      }
+
+      .chart-body {
+        padding: 25px;
+        position: relative;
+        height: 350px;
+      }
+
+      /* Responsive Design */
+      @media (max-width: 1200px) {
+        .d-flex.justify-content-start.gap-4.flex-wrap {
+          justify-content: center !important;
+        }
+
+        .card {
+          max-width: 200px;
+        }
+      }
+
+      @media (max-width: 576px) {
+        .card {
+          min-width: 100%;
+        }
+
+        .dashboard-header {
+          text-align: center;
+        }
+
+        .dropdown-wrapper {
+          margin: 20px 0 !important;
+        }
+      }
+    </style>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <script src="js/script.js"></script>
+
+    <script src="js/navbar.js"></script>
+  </head>
+  <body>
+    <div class="main" id="main">
+      <div class="main-content">
+        <div class="main-content-container">
+          <div class="dashboard-header">
+            <div>
+              <h2 class="dashboard-title">Dashboard</h2>
+              <p class="text-muted">
+                Your recent transaction activity and all
+              </p>
+            </div>
+            <div class="dropdown-wrapper">
+              <select
+                id="departmentSelect"
+                class="department-dropdown mt-3 mt-md-0">
+                <option value="all" selected>All Departments</option>
+              </select>
+            </div>
+          </div>
+
+          <div
+            id="statsContainer"
+            class="d-flex justify-content-start gap-4 flex-wrap mt-2 pt-2 stats-container">
+            <div
+              class="card d-flex flex-row align-items-center justify-content-start gap-3">
+              <i class="fas fa-chair fa-2x text-primary"></i>
+              <div class="text-start ms-3">
+                <h5>Total Seats</h5>
+                <h2 id="totalSeats">350</h2>
+              </div>
+            </div>
+
+            <div
+              class="card d-flex flex-row align-items-center justify-content-start gap-3">
+              <i class="fas fa-user-check fa-2x text-success"></i>
+              <div class="text-start ms-3">
+                <h5>Occupied</h5>
+                <h2 id="occupiedSeats">0</h2>
+              </div>
+            </div>
+
+            <div
+              class="card d-flex flex-row align-items-center justify-content-start gap-3">
+              <i class="fas fa-chair fa-2x text-info"></i>
+              <div class="text-start ms-3">
+                <h5>Free Seats</h5>
+                <h2 id="freeSeats">350</h2>
+              </div>
+            </div>
+
+            <div
+              class="card d-flex flex-row align-items-center justify-content-start gap-3">
+              <i class="fas fa-user-times fa-2x text-warning"></i>
+              <div class="text-start ms-3">
+                <h5>Unassigned</h5>
+                <h2 id="unassignedEmployees">0</h2>
+              </div>
+            </div>
+
+            <div
+              class="card d-flex flex-row align-items-center justify-content-start gap-3">
+              <i class="fas fa-users fa-2x text-secondary"></i>
+              <div class="text-start ms-3">
+                <h5>Total Employees</h5>
+                <h2 id="totalEmployees">0</h2>
+              </div>
+            </div>
+          </div>
+
+          <div class="row mt-5">
+            <div class="col-md-6 mb-4">
+              <div class="chart-card">
+                <div class="chart-header">
+                  <h5><i class="fas fa-chart-pie"></i> Seat Distribution</h5>
+                  <p class="text-muted">Current seat allocation status</p>
+                </div>
+                <div class="chart-body">
+                  <canvas id="seatChart"></canvas>
+                </div>
+              </div>
+            </div>
+            <div class="col-md-6 mb-4">
+              <div class="chart-card">
+                <div class="chart-header">
+                  <h5><i class="fas fa-chart-area"></i> Seat Utilization</h5>
+                  <p class="text-muted">Seat usage efficiency metrics</p>
+                </div>
+                <div class="chart-body">
+                  <canvas id="utilizationChart"></canvas>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const departmentSelect = document.getElementById("departmentSelect");
+      const totalSeatsEl = document.getElementById("totalSeats");
+      const occupiedSeatsEl = document.getElementById("occupiedSeats");
+      const freeSeatsEl = document.getElementById("freeSeats");
+      const unassignedEmployeesEl =
+        document.getElementById("unassignedEmployees");
+      const totalEmployeesEl = document.getElementById("totalEmployees");
+      const statsContainer = document.getElementById("statsContainer");
+
+      // Chart variables
+      let seatChart = null;
+      let utilizationChart = null;
+
+      // Real-time data sync
+      let lastDataUpdate = Date.now();
+      const API_BASE = '/api/seats';
+      const SYNC_KEY = localStorage.getItem('sync_key') || '';
+      const headers = { 'Content-Type': 'application/json', 'x-sync-key': SYNC_KEY };
+
+      // Listen for data changes from other pages
+      window.addEventListener("storage", (e) => {
+        if (e.key === "employeeDataUpdated" || e.key === "seatUpdated") {
+          console.log("Data updated in another tab, refreshing...");
+          setTimeout(async () => {
+            await loadDepartments();
+            await loadEmployeeStats(departmentSelect.value);
+          }, 500);
+        }
+      });
+
+      // Listen for page visibility changes
+      document.addEventListener("visibilitychange", async () => {
+        if (!document.hidden) {
+          // Check if data might be stale (more than 30 seconds old)
+          if (Date.now() - lastDataUpdate > 30000) {
+            console.log("Page became visible, refreshing data...");
+            await loadDepartments();
+            await loadEmployeeStats(departmentSelect.value);
+          }
+        }
+      });
+
+      // Periodic refresh every 2 minutes
+      setInterval(async () => {
+        if (!document.hidden) {
+          await loadEmployeeStats(departmentSelect.value);
+        }
+      }, 120000);
+
+      // Load departments from SQLite
+      async function loadDepartments() {
+        try {
+          const currentSyncKey = localStorage.getItem('sync_key') || '';
+          const res = await fetch(API_BASE, { 
+            headers: { 
+              ...headers, 
+              'x-sync-key': currentSyncKey 
+            } 
+          });
+          if (!res.ok) throw new Error('Failed to fetch seats');
+          const seats = await res.json();
+
+          const departments = new Set();
+          seats.forEach((seatData) => {
+            if (seatData.department && seatData.employeeName) {
+              departments.add(seatData.department);
+            }
+          });
+
+          // Clear existing options except "All Departments"
+          departmentSelect.innerHTML =
+            '<option value="all" selected>All Departments</option>';
+
+          // Add departments
+          Array.from(departments)
+            .sort()
+            .forEach((dept) => {
+              const option = document.createElement("option");
+              option.value = dept;
+              option.textContent = dept;
+              departmentSelect.appendChild(option);
+            });
+        } catch (error) {
+          console.error("Error loading departments:", error);
+        }
+      }
+
+      // Load employee statistics from SQLite
+      async function loadEmployeeStats(department = "all") {
+        try {
+          // Show loading state
+          statsContainer.classList.add("stats-loading");
+
+          // Fixed total seats
+          const TOTAL_SEATS = 350;
+          let totalEmployees = 0;
+          let occupiedSeats = 0;
+          let unassignedEmployees = 0;
+
+          const currentSyncKey = localStorage.getItem('sync_key') || '';
+          const res = await fetch(API_BASE, { 
+            headers: { 
+              ...headers, 
+              'x-sync-key': currentSyncKey 
+            } 
+          });
+          if (!res.ok) throw new Error('Failed to fetch seats');
+          let seats = await res.json();
+
+          if (department !== "all") {
+            seats = seats.filter(s => s.department === department);
+          }
+
+          // Process seat data
+          seats.forEach((seatData) => {
+            // Only count records that have employee information
+            if (seatData.employeeName && seatData.employeeId) {
+              totalEmployees++;
+
+              // Check if seat is occupied
+              if (seatData.isOccupied && seatData.seatNumber) {
+                occupiedSeats++;
+              } else {
+                unassignedEmployees++;
+              }
+            }
+          });
+
+          // Calculate free seats
+          const freeSeats = TOTAL_SEATS - occupiedSeats;
+
+          // Update numbers with animation
+          animateNumber(totalSeatsEl, TOTAL_SEATS);
+          animateNumber(occupiedSeatsEl, occupiedSeats);
+          animateNumber(freeSeatsEl, freeSeats);
+          animateNumber(unassignedEmployeesEl, unassignedEmployees);
+          animateNumber(totalEmployeesEl, totalEmployees);
+
+          // Update charts
+          updateSeatChart(occupiedSeats, freeSeats, unassignedEmployees);
+          updateUtilizationChart(
+            occupiedSeats,
+            freeSeats,
+            TOTAL_SEATS
+          );
+
+          // Update last refresh time
+          lastDataUpdate = Date.now();
+
+          // Update department info in title if specific department selected
+          const titleEl = document.querySelector(".dashboard-title");
+          const subtitleEl = document.querySelector(".text-muted");
+          if (department !== "all") {
+            titleEl.textContent = `Dashboard - ${department}`;
+            subtitleEl.textContent = `Showing ${department} employees and seat assignments`;
+          } else {
+            titleEl.textContent = "Dashboard";
+            subtitleEl.textContent = "Employee and seat management overview";
+          }
+        } catch (error) {
+          console.error("Error loading employee statistics:", error);
+          // Show error state
+          totalSeatsEl.textContent = "---";
+          occupiedSeatsEl.textContent = "---";
+          freeSeatsEl.textContent = "---";
+          unassignedEmployeesEl.textContent = "---";
+          totalEmployeesEl.textContent = "---";
+
+          // Show error notification
+          const errorNotification = document.createElement("div");
+          errorNotification.style.cssText = `
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            background: rgba(220, 53, 69, 0.9);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            z-index: 1002;
+            font-size: 14px;
+          `;
+          errorNotification.innerHTML =
+            '<i class="fas fa-exclamation-triangle"></i> Error loading data';
+          document.body.appendChild(errorNotification);
+
+          setTimeout(() => {
+            document.body.removeChild(errorNotification);
+          }, 3000);
+        } finally {
+          // Remove loading state
+          statsContainer.classList.remove("stats-loading");
+        }
+      }
+
+      // Animate number changes
+      function animateNumber(element, targetValue) {
+        const currentValue = parseInt(element.textContent) || 0;
+        const increment = targetValue > currentValue ? 1 : -1;
+        const duration = 300;
+        const steps = Math.abs(targetValue - currentValue);
+        const stepDuration = steps > 0 ? duration / steps : 0;
+
+        if (steps === 0) return;
+
+        let current = currentValue;
+        const timer = setInterval(() => {
+          current += increment;
+          element.textContent = current;
+
+          if (current === targetValue) {
+            clearInterval(timer);
+         
+            element.style.transform = "scale(1.1)";
+            setTimeout(() => {
+              element.style.transform = "scale(1)";
+            }, 200);
+          }
+        }, stepDuration);
+      }
+
+      // Chart functions with enhanced styling
+      function updateSeatChart(occupied, free, unassigned) {
+        const ctx = document.getElementById("seatChart").getContext("2d");
+
+        if (seatChart) {
+          seatChart.destroy();
+        }
+
+        seatChart = new Chart(ctx, {
+          type: "doughnut",
+          data: {
+            labels: ["Occupied Seats", "Free Seats", "Unassigned Employees"],
+            datasets: [
+              {
+                data: [occupied, free, unassigned],
+                backgroundColor: [
+                  "rgba(102, 126, 234, 0.8)",
+                  "rgba(118, 75, 162, 0.8)",
+                  "rgba(255, 193, 7, 0.8)",
+                ],
+                borderWidth: 3,
+                borderColor: "#fff",
+                hoverBackgroundColor: [
+                  "rgba(102, 126, 234, 1)",
+                  "rgba(118, 75, 162, 1)",
+                  "rgba(255, 193, 7, 1)",
+                ],
+                hoverBorderWidth: 4,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: "bottom",
+                labels: {
+                  padding: 20,
+                  usePointStyle: true,
+                  font: {
+                    size: 12,
+                    weight: "500",
+                  },
+                },
+              },
+              tooltip: {
+                backgroundColor: "rgba(0, 0, 0, 0.8)",
+                titleColor: "#fff",
+                bodyColor: "#fff",
+                borderColor: "rgba(255, 255, 255, 0.2)",
+                borderWidth: 1,
+                cornerRadius: 8,
+              },
+            },
+            animation: {
+              animateScale: true,
+              duration: 1000,
+            },
+          },
+        });
+      }
+
+      // New utilization chart function
+      function updateUtilizationChart(occupied, free, total) {
+        const ctx = document
+          .getElementById("utilizationChart")
+          .getContext("2d");
+
+        if (utilizationChart) {
+          utilizationChart.destroy();
+        }
+
+        const utilizationPercentage = Math.round((occupied / total) * 100);
+        const freePercentage = Math.round((free / total) * 100);
+
+        utilizationChart = new Chart(ctx, {
+          type: "pie",
+          data: {
+            labels: ["Utilized", "Available"],
+            datasets: [
+              {
+                data: [utilizationPercentage, freePercentage],
+                backgroundColor: [
+                  "rgba(144, 238, 144, 0.8)",
+                  "rgba(0, 136, 255, 0.8)",
+                ],
+                borderColor: [
+                  "rgba(144, 238, 144, 1)",
+                  "rgba(0, 136, 255, 1)",
+                ],
+                borderWidth: 3,
+                hoverBackgroundColor: [
+                  "rgba(144, 238, 144, 1)",
+                  "rgba(0, 136, 255, 1)",
+                ],
+                hoverBorderWidth: 4,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: {
+                position: "bottom",
+                labels: {
+                  padding: 20,
+                  usePointStyle: true,
+                  font: {
+                    size: 12,
+                    weight: "500",
+                  },
+                },
+              },
+              tooltip: {
+                backgroundColor: "rgba(0, 0, 0, 0.8)",
+                titleColor: "#fff",
+                bodyColor: "#fff",
+                borderColor: "rgba(255, 255, 255, 0.2)",
+                borderWidth: 1,
+                cornerRadius: 8,
+                callbacks: {
+                  label: function (context) {
+                    if (context.dataIndex < 2) {
+                      return context.label + ": " + context.parsed + "%";
+                    } else {
+                      return (
+                        context.label + ": " + context.parsed + " employees"
+                      );
+                    }
+                  },
+                },
+              },
+            },
+            animation: {
+              animateRotate: true,
+              duration: 1000,
+            },
+          },
+        });
+      }
+
+      // Handle department selection change
+      departmentSelect.addEventListener("change", async (e) => {
+        await loadEmployeeStats(e.target.value);
+      });
+
+      // Initialize page
+      document.addEventListener("DOMContentLoaded", async () => {
+        // Check authentication before loading page
+        if (!authManager.isLoggedIn()) {
+          window.location.href = "login.html";
+          return;
+        }
+
+        // Initialize navbar
+        const navbar = new Navbar();
+        navbar.init();
+
+        await loadDepartments();
+        await loadEmployeeStats();
+      });
+
+      // Add smooth transition for number changes and loading states
+      const style = document.createElement("style");
+      style.textContent = `
+        #totalSeats, #occupiedSeats, #freeSeats, #unassignedEmployees, #totalEmployees {
+          transition: all 0.3s ease;
+        }
+        
+        .stats-loading {
+          opacity: 0.7;
+          pointer-events: none;
+        }
+        
+        .stats-loading .card {
+          animation: pulse 1.5s ease-in-out infinite;
+        }
+        
+        @keyframes pulse {
+          0%, 100% {
+            opacity: 0.7;
+          }
+          50% {
+            opacity: 0.9;
+          }
+        }
+      
+      `;
+      document.head.appendChild(style);
+
+      // Show refresh indicator during data updates
+      function showRefreshIndicator() {
+        // refreshIndicator was not defined, removing calls to it
+        setTimeout(() => {
+        }, 2000);
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "name": "CREAT Yojana_BP_20260803",
+  "description": "A digital handshake and opportunity tracking platform for PMTS Corp Marketing. Features a centralized DCBA Master database, real-time sales forecasting, and interactive matrix tracking for product-customer opportunities across multiple segments.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

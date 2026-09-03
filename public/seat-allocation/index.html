@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Deskify | Login</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
+      rel="stylesheet" />
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css"
+      rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="container-fluid d-flex justify-content-center align-items-center min-vh-100 bg-light">
+      <div class="login-box-wrapper">
+        <div class="row login-box shadow-lg rounded-4 overflow-hidden bg-white">
+          <div class="col-md-6 p-5 right-panel">
+            <h3 class="welcome-text">Welcome</h3>
+            <p class="login-subtext">Login your account</p>
+            <form id="loginForm">
+              <div class="mb-3">
+                <label for="loginId" class="form-label">Login Id</label>
+                <input type="text" id="loginId" class="form-control" placeholder="Your Login Id" required />
+              </div>
+              <div class="mb-3">
+                <label for="password" class="form-label">Password</label>
+                <input type="password" id="password" class="form-control" placeholder="Your Password" required />
+              </div>
+              <button type="submit" class="btn btn-primary w-100">Log in</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script src="js/script.js"></script>
+  </body>
+</html>
