@@ -2,12 +2,17 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { ProjectData, Employee, FiscalYear, FiscalMode, getAbsoluteMonthIndex, Opportunity } from '../types';
 import { RATE_PER_HOUR, HOURS_PER_MONTH, SKILL_MAPPING, MANPOWER_CATEGORIES, EXPENSE_CATEGORIES, CONTRACTED_EMPLOYEE_RATE, MAX_MONTHS, isConfirmedProject, classifyCategory, isSummaryOrCalculatedLabel } from '../constants';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ComposedChart, Line, PieChart, Pie, Cell, LabelList, AreaChart, Area } from 'recharts';
-import { ChevronDown, ChevronRight, ArrowRight, Users, UserPlus, TrendingUp, CreditCard, Target } from 'lucide-react';
+import { ChevronDown, ChevronRight, ArrowRight, Users, UserPlus, TrendingUp, TrendingDown, CreditCard, Target, ListTree, FolderTree, Check, BarChart3, Grid3X3, Calendar } from 'lucide-react';
 import EmployeeRoster from './EmployeeRoster';
 import EmployeeAnalysis from './EmployeeAnalysis';
 import ConsolidatedTeamView from './ConsolidatedTeamView';
 import { FamilyView } from './FamilyView';
 import { ExpenseList } from './ExpenseList';
+import { ComparativeAnalysisView } from './ComparativeAnalysisView';
+import { buildAnalyticsTree } from './analytics/treeBuilder';
+import { AnalyticsTreeTable } from './analytics/AnalyticsTreeTable';
+import { AnalyticsTreeMonthly } from './analytics/AnalyticsTreeMonthly';
+import { AnalyticsTreeGraphical } from './analytics/AnalyticsTreeGraphical';
 
 interface PMOAnalyticsViewProps {
   projects: any[];
@@ -19,6 +24,7 @@ interface PMOAnalyticsViewProps {
   mode?: FiscalMode;
   setMode?: (m: FiscalMode) => void;
   filters: any;
+  totalsLookup?: Record<string, any>;
 }
 
 const MANPOWER_SEQUENCE = [
@@ -419,52 +425,55 @@ const getAuthoritativeRowLocal = (
   const hasNonZero = (arr: number[]) => arr.some(v => v !== 0);
 
   // Try direct primary row for the current mode
-  const primarySource = mode === 'Actuals' 
-    ? (p.actuals || {}) 
-    : (mode === 'Forecast' ? (p.forecast || {}) : ((p.rows && Object.keys(p.rows).length > 0) ? p.rows : (p.pmoRows || {})));
-
-  let primaryRow = findInObj(primarySource, cat);
-  if (primaryRow) {
-    const normalized = normalizeRow(primaryRow);
-    if (hasNonZero(normalized)) return normalized;
-  }
-
-  // Check actualsSkills / forecastSkills / pmoSkills
   if (mode === 'Actuals') {
-    primaryRow = findInObj(p.actualsSkills, cat);
+    const primaryRow = findInObj(p.actuals, cat) || findInObj(p.actualsSkills, cat);
     if (primaryRow) {
       const normalized = normalizeRow(primaryRow);
       if (hasNonZero(normalized)) return normalized;
     }
   } else if (mode === 'Forecast') {
-    primaryRow = findInObj(p.forecastSkills, cat);
+    const primaryRow = findInObj(p.forecast, cat) || findInObj(p.forecastSkills, cat);
     if (primaryRow) {
       const normalized = normalizeRow(primaryRow);
       if (hasNonZero(normalized)) return normalized;
     }
   } else {
-    primaryRow = findInObj(p.pmoSkills, cat) || findInObj(p.skills, cat);
-    if (primaryRow) {
-      const normalized = normalizeRow(primaryRow);
-      if (hasNonZero(normalized)) return normalized;
+    const candidates = [
+      findInObj(p.rows, cat),
+      findInObj(p.pmoRows, cat),
+      findInObj(p.pmoSkills, cat),
+      findInObj(p.skills, cat),
+      findInObj(p.expenses, cat)
+    ];
+    for (const cand of candidates) {
+      if (cand) {
+        const normalized = normalizeRow(cand);
+        if (hasNonZero(normalized)) return normalized;
+      }
     }
   }
 
   // Fallback to employeeSkills based on mode
-  const empSkillsKey = mode === 'Actuals' ? 'actualsEmployeeSkills' : (mode === 'Forecast' ? 'forecastEmployeeSkills' : 'pmoEmployeeSkills');
-  const targetEmployeeSkills = ((p as any)[empSkillsKey] || (mode === 'Budget' ? p.employeeSkills : undefined)) as any;
-  if (targetEmployeeSkills) {
-    const allocsObj = findInObj(targetEmployeeSkills, cat);
-    if (allocsObj) {
-      const sumRow = new Array(144).fill(0);
-      Object.values(allocsObj).forEach((allocs: any) => {
-        const normalizedAlloc = normalizeRow(allocs);
-        for (let i = 0; i < 144; i++) {
-          sumRow[i] += normalizedAlloc[i];
+  const empSkillsList = mode === 'Actuals'
+    ? [p.actualsEmployeeSkills]
+    : mode === 'Forecast'
+    ? [p.forecastEmployeeSkills]
+    : [p.pmoEmployeeSkills, p.employeeSkills];
+
+  for (const targetEmployeeSkills of empSkillsList) {
+    if (targetEmployeeSkills) {
+      const allocsObj = findInObj(targetEmployeeSkills, cat);
+      if (allocsObj) {
+        const sumRow = new Array(144).fill(0);
+        Object.values(allocsObj).forEach((allocs: any) => {
+          const normalizedAlloc = normalizeRow(allocs);
+          for (let i = 0; i < 144; i++) {
+            sumRow[i] += normalizedAlloc[i];
+          }
+        });
+        if (hasNonZero(sumRow)) {
+          return sumRow;
         }
-      });
-      if (hasNonZero(sumRow)) {
-        return sumRow;
       }
     }
   }
@@ -495,7 +504,8 @@ const getActiveProjectData = (p: any, mode: FiscalMode) => {
       ...(p.skills || {}),
       ...(p.expenses || {}),
       ...(p.pmoSkills || {}),
-      ...(p.pmoEmployeeSkills || p.employeeSkills || {})
+      ...(p.pmoEmployeeSkills || {}),
+      ...(p.employeeSkills || {})
     };
   }
   
@@ -516,9 +526,12 @@ const getActiveProjectData = (p: any, mode: FiscalMode) => {
   return activeSource;
 };
 
-const PMOAnalyticsView: React.FC<PMOAnalyticsViewProps> = ({ projects, months, employees, selectedFY, selectedFYs, config, mode = 'Budget', setMode, filters }) => {
+const PMOAnalyticsView: React.FC<PMOAnalyticsViewProps> = ({ projects, months, employees, selectedFY, selectedFYs, config, mode = 'Budget', setMode, filters, totalsLookup }) => {
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
-  const [activeAnalyticsTab, setActiveAnalyticsTab] = useState<'trends' | 'roster' | 'analysis' | 'family' | 'team' | 'family-won' | 'expenses'>('trends');
+  const [activeAnalyticsTab, setActiveAnalyticsTab] = useState<'trends' | 'consolidated_monthly' | 'roster' | 'analysis' | 'family' | 'team' | 'family-won' | 'expenses' | 'comparative'>('comparative');
+  const [comparativeSubView, setComparativeSubView] = useState<'table' | 'burndown' | 'dept_charts'>('table');
+  const [familySubView, setFamilySubView] = useState<'portfolio_tree' | 'scorecard' | 'matrix' | 'efficiency'>('portfolio_tree');
+  const [openMenuGroup, setOpenMenuGroup] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchOpportunities = async () => {
@@ -634,10 +647,11 @@ const PMOAnalyticsView: React.FC<PMOAnalyticsViewProps> = ({ projects, months, e
       const fyStartYear = 19 + Math.floor(i / 12);
       const fyStr = `FY ${fyStartYear}-${fyStartYear + 1}`;
       
-      const fyConfig = config.fyFinancials?.[fyStr];
+      const safeConfig = config || {};
+      const fyConfig = safeConfig.fyFinancials?.[fyStr];
       ratesCache[i] = {
-        hRate: (fyConfig?.hourlyRate !== undefined && fyConfig?.hourlyRate !== null) ? fyConfig.hourlyRate : (config.hourlyRate || RATE_PER_HOUR),
-        cRate: (fyConfig?.contractedEmployeeRate !== undefined && fyConfig?.contractedEmployeeRate !== null) ? fyConfig.contractedEmployeeRate : (config.contractedEmployeeRate || CONTRACTED_EMPLOYEE_RATE)
+        hRate: (fyConfig?.hourlyRate !== undefined && fyConfig?.hourlyRate !== null) ? fyConfig.hourlyRate : (safeConfig.hourlyRate || RATE_PER_HOUR),
+        cRate: (fyConfig?.contractedEmployeeRate !== undefined && fyConfig?.contractedEmployeeRate !== null) ? fyConfig.contractedEmployeeRate : (safeConfig.contractedEmployeeRate || CONTRACTED_EMPLOYEE_RATE)
       };
     }
     const hoursPerMonth = 180;
@@ -704,10 +718,10 @@ const PMOAnalyticsView: React.FC<PMOAnalyticsViewProps> = ({ projects, months, e
             if (isContractedExp) {
               const mmObj = groupedData['Contracted Employee'] || groupedData['Contracted Employee (MM)'] || {};
               if ((mmObj[i] || 0) === 0) {
-                expenseCr += Math.abs(val) > 1000 ? val / 10000000 : val;
+                expenseCr += val / 10000000;
               }
             } else {
-              expenseCr += Math.abs(val) > 1000 ? val / 10000000 : val;
+              expenseCr += val / 10000000;
             }
           }
         }
@@ -716,8 +730,55 @@ const PMOAnalyticsView: React.FC<PMOAnalyticsViewProps> = ({ projects, months, e
 
     const manpowerCr = directManpowerCr + contractedManpowerCr;
     const totalCr = manpowerCr + expenseCr;
-    return { mm: directMM + contractedMM, directMM, contractedMM, manpowerCr, expenseCr, totalCr };
-  }, [config, selectedFYs, selectedFY, getFYArray]);
+    const mm = directMM + contractedMM;
+
+    if (totalCr > 0 || mm > 0) {
+      return { mm, directMM, contractedMM, manpowerCr, expenseCr, totalCr };
+    }
+
+    if (totalsLookup) {
+      const pLookup = totalsLookup[pObj.id] || (pObj.code ? totalsLookup[pObj.code] : undefined);
+      if (pLookup) {
+        const mKey = modeVal === 'Budget' ? 'budget' : (modeVal === 'Actuals' ? 'actuals' : 'forecast');
+        const t = pLookup[mKey];
+        const tTotal = t ? (t.grandTotalCrs ?? t.totalCr ?? ((t.manpowerCr || 0) + (t.expensesCr || 0))) : 0;
+        if (t && (tTotal > 0 || (t.mm || 0) > 0)) {
+          return {
+            mm: t.mm || 0,
+            directMM: t.directMM ?? t.mm ?? 0,
+            contractedMM: t.contractedMM ?? 0,
+            manpowerCr: t.manpowerCr || 0,
+            expenseCr: t.expensesCr ?? t.expenseCr ?? 0,
+            totalCr: tTotal
+          };
+        }
+      }
+    }
+
+    if (modeVal === 'Budget' && (pObj.trueBudgetCr > 0 || pObj.portfolioBudgetCr > 0)) {
+      return {
+        mm: pObj.trueBudgetMM || 0,
+        directMM: pObj.trueBudgetMM || 0,
+        contractedMM: 0,
+        manpowerCr: 0,
+        expenseCr: 0,
+        totalCr: pObj.trueBudgetCr ?? pObj.portfolioBudgetCr ?? 0
+      };
+    }
+
+    if (modeVal === 'Actuals' && (pObj.trueActualSpentCr > 0 || pObj.trueActualMM > 0)) {
+      return {
+        mm: pObj.trueActualMM || 0,
+        directMM: pObj.trueActualMM || 0,
+        contractedMM: 0,
+        manpowerCr: pObj.trueActualManpowerSpentCr || 0,
+        expenseCr: pObj.trueActualExpenseSpentCr || 0,
+        totalCr: pObj.trueActualSpentCr || 0
+      };
+    }
+
+    return { mm, directMM, contractedMM, manpowerCr, expenseCr, totalCr };
+  }, [config, selectedFYs, selectedFY, getFYArray, totalsLookup]);
 
   const aggregatedData = useMemo(() => {
     // Pre-calculate rates for all months to avoid repeated lookups
@@ -1145,7 +1206,7 @@ const PMOAnalyticsView: React.FC<PMOAnalyticsViewProps> = ({ projects, months, e
         
         if (!expenseData[cat]) expenseData[cat] = new Array(numMonths).fill(0);
         monthsArray.forEach((val: number, i: number) => {
-          const valCr = Math.abs(val) > 1000 ? val / 10000000 : val;
+          const valCr = val / 10000000;
           const vCr = (typeof valCr === 'number' && !isNaN(valCr)) ? valCr : 0;
 
           if (!holidayLeave || isContractedExp) {
@@ -1258,6 +1319,19 @@ const PMOAnalyticsView: React.FC<PMOAnalyticsViewProps> = ({ projects, months, e
     return projects;
   }, [projects, filters.family]);
 
+  const analyticsTree = useMemo(() => {
+    return buildAnalyticsTree({
+      projects: filteredProjects,
+      months,
+      selectedFY,
+      selectedFYs,
+      config,
+      totalsLookup,
+      calculateProjectCost,
+      getActiveProjectData
+    });
+  }, [filteredProjects, months, selectedFY, selectedFYs, config, totalsLookup, calculateProjectCost, getActiveProjectData]);
+
   const renderMonthlyDataRow = (
     label: string, 
     getData: (m: string) => number[], 
@@ -1351,65 +1425,574 @@ const PMOAnalyticsView: React.FC<PMOAnalyticsViewProps> = ({ projects, months, e
     }
   };
 
+  const isComparativeGroup = activeAnalyticsTab === 'comparative';
+  const isConsolidatedMonthlyGroup = activeAnalyticsTab === 'consolidated_monthly';
+  const isFamilyGroup = activeAnalyticsTab === 'family';
+  const isCostGroup = activeAnalyticsTab === 'trends' || activeAnalyticsTab === 'expenses';
+  const isWorkforceGroup = activeAnalyticsTab === 'roster' || activeAnalyticsTab === 'analysis' || activeAnalyticsTab === 'team';
+
   return (
-    <div className="p-4 space-y-4 animate-fadeIn">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex bg-slate-100 rounded-lg p-1">
-          <button onClick={() => setActiveAnalyticsTab('trends')} className={`px-3 py-1 rounded text-[10px] font-black uppercase ${activeAnalyticsTab === 'trends' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Trends</button>
-          <button onClick={() => setActiveAnalyticsTab('family')} className={`px-3 py-1 rounded text-[10px] font-black uppercase ${activeAnalyticsTab === 'family' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Family View</button>
-          <button onClick={() => setActiveAnalyticsTab('roster')} className={`px-3 py-1 rounded text-[10px] font-black uppercase ${activeAnalyticsTab === 'roster' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Employee Roster</button>
-          <button onClick={() => setActiveAnalyticsTab('analysis')} className={`px-3 py-1 rounded text-[10px] font-black uppercase ${activeAnalyticsTab === 'analysis' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Employee Analysis</button>
-          <button onClick={() => setActiveAnalyticsTab('team')} className={`px-3 py-1 rounded text-[10px] font-black uppercase ${activeAnalyticsTab === 'team' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Team View</button>
-          <button onClick={() => setActiveAnalyticsTab('expenses')} className={`px-3 py-1 rounded text-[10px] font-black uppercase ${activeAnalyticsTab === 'expenses' ? 'bg-white shadow-sm' : 'text-slate-500'}`}>Expense Split</button>
-        </div>
-        
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-3">
-            {['Budget', 'Actuals'].map((m) => (
-              <label key={m} className={`flex items-center gap-2 px-3 py-1.5 bg-white border rounded-lg cursor-pointer transition-all shadow-sm ${selectedModes.includes(m as FiscalMode) ? 'border-indigo-300 text-indigo-700 ring-1 ring-indigo-100' : 'border-slate-200 text-slate-500 hover:border-slate-300'}`}>
-                <div className={`w-3.5 h-3.5 rounded border flex items-center justify-center transition-colors ${selectedModes.includes(m as FiscalMode) ? 'bg-indigo-600 border-indigo-600' : 'border-slate-300 bg-slate-50'}`}>
-                   {selectedModes.includes(m as FiscalMode) && <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
-                </div>
-                <input type="checkbox" className="hidden" checked={selectedModes.includes(m as FiscalMode)} onChange={() => toggleMode(m as FiscalMode)} />
-                <span className="text-[10px] font-black uppercase tracking-wider">{m}</span>
-              </label>
-            ))}
-          </div>
-
-          <div className="flex bg-slate-100 rounded-lg p-1 shadow-inner border border-slate-200/60">
-            <button onClick={() => setViewMode('tabular')} className={`px-4 py-1.5 rounded-md text-[10px] font-black uppercase tracking-wider transition-all ${viewMode === 'tabular' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Tabular</button>
-            <button onClick={() => setViewMode('graphical')} className={`px-4 py-1.5 rounded-md text-[10px] font-black uppercase tracking-wider transition-all ${viewMode === 'graphical' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>Graphical</button>
-          </div>
-        </div>
-
-        {activeAnalyticsTab !== 'family' && (
-          <div className="flex items-center gap-2 bg-slate-100 rounded-lg p-1 ml-4">
-            <span className="text-[9px] font-black uppercase text-slate-400 px-2">Sort By</span>
-            <select 
-              value={sortBy} 
-              onChange={(e) => setSortBy(e.target.value as any)}
-              className="bg-white border-none rounded px-2 py-1 text-[10px] font-bold outline-none cursor-pointer"
+    <div className="space-y-3">
+      {/* Unified Categorized Analytics Navigation Bar with Dropdown Menus & Inline Sub-Tabs */}
+      <div className="relative z-[40] bg-white border border-slate-200 px-3 py-2 rounded-2xl shadow-xs flex flex-wrap items-center justify-between gap-2">
+        {/* Left: Categorized Primary Navigation Pillars with Dropdown Menus */}
+        <div className="flex flex-wrap items-center gap-1.5 bg-slate-100/80 p-1 rounded-xl border border-slate-200/60">
+          {/* Pillar 1: Budget vs Actuals */}
+          <div
+            className="relative"
+            onMouseEnter={() => setOpenMenuGroup('comparative')}
+            onMouseLeave={() => setOpenMenuGroup(null)}
+          >
+            <button
+              type="button"
+              onClick={() => setActiveAnalyticsTab('comparative')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                isComparativeGroup
+                  ? 'bg-white text-indigo-700 shadow-xs ring-1 ring-indigo-200/80'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
             >
-              <option value="name">Name</option>
-              <option value="manpowerMM">Manpower (MM)</option>
-              <option value="totalCr">Actual (Cr)</option>
-            </select>
-            <button 
-              onClick={() => setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
-              className="bg-white p-1 rounded hover:bg-slate-50 transition-colors"
-              title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
-            >
-              {sortOrder === 'asc' ? (
-                <TrendingUp size={14} className="text-emerald-500" />
-              ) : (
-                <TrendingUp size={14} className="text-rose-500 rotate-180" />
-              )}
+              <Target size={13} className={isComparativeGroup ? 'text-indigo-600' : 'text-slate-400'} />
+              <span>Budget vs Actuals</span>
+              <ChevronDown size={11} className="opacity-60" />
             </button>
+
+            {openMenuGroup === 'comparative' && (
+              <div className="absolute top-full left-0 pt-1 w-60 z-[400]">
+                <div className="bg-white border border-slate-200 rounded-xl shadow-xl py-1.5 overflow-hidden">
+                  <div className="px-3 py-1 text-[8px] font-black uppercase tracking-widest text-slate-400">
+                    Comparative Views
+                  </div>
+                  {(
+                    [
+                      { id: 'table', label: 'Variance Table (Dept > Family)' },
+                      { id: 'burndown', label: 'Cumulative Burn-Down Chart' },
+                      { id: 'dept_charts', label: 'Dept & Family Breakdown Charts' }
+                    ] as const
+                  ).map(item => {
+                    const active = isComparativeGroup && comparativeSubView === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          setActiveAnalyticsTab('comparative');
+                          setComparativeSubView(item.id);
+                          setOpenMenuGroup(null);
+                        }}
+                        className={`w-full px-3 py-2 text-left text-[10px] font-bold uppercase tracking-wider flex items-center justify-between hover:bg-indigo-50 transition-colors ${
+                          active ? 'text-indigo-700 bg-indigo-50/50 font-black' : 'text-slate-700'
+                        }`}
+                      >
+                        <span>{item.label}</span>
+                        {active && <Check size={12} className="text-indigo-600" />}
+                      </button>
+                    );
+                  })}
+                  <div className="border-t border-slate-100 my-1" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveAnalyticsTab('consolidated_monthly');
+                      setViewMode('tabular');
+                      setOpenMenuGroup(null);
+                    }}
+                    className={`w-full px-3 py-2 text-left text-[10px] font-bold uppercase tracking-wider flex items-center justify-between hover:bg-indigo-50 transition-colors ${
+                      isConsolidatedMonthlyGroup ? 'text-indigo-700 bg-indigo-50/50 font-black' : 'text-slate-700'
+                    }`}
+                  >
+                    <span>Consolidated Budget (Monthly)</span>
+                    {isConsolidatedMonthlyGroup && <Check size={12} className="text-indigo-600" />}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-        )}
+
+          {/* Pillar 2: Consolidated Budget (Monthly) */}
+          <div
+            className="relative"
+            onMouseEnter={() => setOpenMenuGroup('consolidated_monthly')}
+            onMouseLeave={() => setOpenMenuGroup(null)}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setActiveAnalyticsTab('consolidated_monthly');
+                setViewMode('tabular');
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                isConsolidatedMonthlyGroup
+                  ? 'bg-white text-indigo-700 shadow-xs ring-1 ring-indigo-200/80'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Calendar size={13} className={isConsolidatedMonthlyGroup ? 'text-indigo-600' : 'text-slate-400'} />
+              <span>Consolidated Budget (Monthly)</span>
+              <ChevronDown size={11} className="opacity-60" />
+            </button>
+
+            {openMenuGroup === 'consolidated_monthly' && (
+              <div className="absolute top-full left-0 pt-1 w-60 z-[400]">
+                <div className="bg-white border border-slate-200 rounded-xl shadow-xl py-1.5 overflow-hidden">
+                  <div className="px-3 py-1 text-[8px] font-black uppercase tracking-widest text-slate-400">
+                    Consolidated Budget (Monthly)
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveAnalyticsTab('consolidated_monthly');
+                      setViewMode('tabular');
+                      setOpenMenuGroup(null);
+                    }}
+                    className={`w-full px-3 py-2 text-left text-[10px] font-bold uppercase tracking-wider flex items-center justify-between hover:bg-indigo-50 transition-colors ${
+                      isConsolidatedMonthlyGroup && viewMode === 'tabular'
+                        ? 'text-indigo-700 bg-indigo-50/50 font-black'
+                        : 'text-slate-700'
+                    }`}
+                  >
+                    <span>Monthly Budget & Effort Table</span>
+                    {isConsolidatedMonthlyGroup && viewMode === 'tabular' && <Check size={12} className="text-indigo-600" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveAnalyticsTab('consolidated_monthly');
+                      setViewMode('graphical');
+                      setOpenMenuGroup(null);
+                    }}
+                    className={`w-full px-3 py-2 text-left text-[10px] font-bold uppercase tracking-wider flex items-center justify-between hover:bg-indigo-50 transition-colors ${
+                      isConsolidatedMonthlyGroup && viewMode === 'graphical'
+                        ? 'text-indigo-700 bg-indigo-50/50 font-black'
+                        : 'text-slate-700'
+                    }`}
+                  >
+                    <span>Monthly Distribution Charts</span>
+                    {isConsolidatedMonthlyGroup && viewMode === 'graphical' && <Check size={12} className="text-indigo-600" />}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Pillar 3: Portfolio & Family (Playing Field) */}
+          <div
+            className="relative"
+            onMouseEnter={() => setOpenMenuGroup('family')}
+            onMouseLeave={() => setOpenMenuGroup(null)}
+          >
+            <button
+              type="button"
+              onClick={() => setActiveAnalyticsTab('family')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                isFamilyGroup
+                  ? 'bg-white text-[#0082ca] shadow-xs ring-1 ring-sky-200/80'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <FolderTree size={13} className={isFamilyGroup ? 'text-[#0082ca]' : 'text-slate-400'} />
+              <span>Portfolio & Family</span>
+              <ChevronDown size={11} className="opacity-60" />
+            </button>
+
+            {openMenuGroup === 'family' && (
+              <div className="absolute top-full left-0 pt-1 w-56 z-[400]">
+                <div className="bg-white border border-slate-200 rounded-xl shadow-xl py-1.5 overflow-hidden">
+                  <div className="px-3 py-1 text-[8px] font-black uppercase tracking-widest text-slate-400">
+                    Portfolio Views
+                  </div>
+                  {(
+                    [
+                      { id: 'portfolio_tree', label: 'Portfolio Tree (Playing Field)' },
+                      { id: 'scorecard', label: 'Family Scorecard (Q / H / Y)' },
+                      { id: 'matrix', label: 'Generation Matrix' },
+                      { id: 'efficiency', label: 'Efficiency Scatter Chart' }
+                    ] as const
+                  ).map(item => {
+                    const active = isFamilyGroup && familySubView === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          setActiveAnalyticsTab('family');
+                          setFamilySubView(item.id);
+                          setOpenMenuGroup(null);
+                        }}
+                        className={`w-full px-3 py-2 text-left text-[10px] font-bold uppercase tracking-wider flex items-center justify-between hover:bg-indigo-50 transition-colors ${
+                          active ? 'text-[#0082ca] bg-sky-50/60 font-black' : 'text-slate-700'
+                        }`}
+                      >
+                        <span>{item.label}</span>
+                        {active && <Check size={12} className="text-[#0082ca]" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Pillar 4: Cost & Expenses (Tree Analytics + Expense Split) */}
+          <div
+            className="relative"
+            onMouseEnter={() => setOpenMenuGroup('cost')}
+            onMouseLeave={() => setOpenMenuGroup(null)}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                if (!isCostGroup) setActiveAnalyticsTab('trends');
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                isCostGroup
+                  ? 'bg-white text-indigo-700 shadow-xs ring-1 ring-indigo-200/80'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <CreditCard size={13} className={isCostGroup ? 'text-indigo-600' : 'text-slate-400'} />
+              <span>Cost & Expenses</span>
+              <ChevronDown size={11} className="opacity-60" />
+            </button>
+
+            {openMenuGroup === 'cost' && (
+              <div className="absolute top-full left-0 pt-1 w-60 z-[400]">
+                <div className="bg-white border border-slate-200 rounded-xl shadow-xl py-1.5 overflow-hidden">
+                  <div className="px-3 py-1 text-[8px] font-black uppercase tracking-widest text-slate-400">
+                    Cost & Expense Breakdown
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveAnalyticsTab('consolidated_monthly');
+                      setViewMode('tabular');
+                      setOpenMenuGroup(null);
+                    }}
+                    className={`w-full px-3 py-2 text-left text-[10px] font-bold uppercase tracking-wider flex items-center justify-between hover:bg-indigo-50 transition-colors ${
+                      activeAnalyticsTab === 'consolidated_monthly'
+                        ? 'text-indigo-700 bg-indigo-50/50 font-black'
+                        : 'text-slate-700'
+                    }`}
+                  >
+                    <span>Consolidated Budget (Monthly)</span>
+                    {activeAnalyticsTab === 'consolidated_monthly' && <Check size={12} className="text-indigo-600" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveAnalyticsTab('trends');
+                      setViewMode('tabular');
+                      setOpenMenuGroup(null);
+                    }}
+                    className={`w-full px-3 py-2 text-left text-[10px] font-bold uppercase tracking-wider flex items-center justify-between hover:bg-indigo-50 transition-colors ${
+                      activeAnalyticsTab === 'trends' && viewMode === 'tabular'
+                        ? 'text-indigo-700 bg-indigo-50/50 font-black'
+                        : 'text-slate-700'
+                    }`}
+                  >
+                    <span>Tree Analytics (Tabular)</span>
+                    {activeAnalyticsTab === 'trends' && viewMode === 'tabular' && <Check size={12} className="text-indigo-600" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveAnalyticsTab('trends');
+                      setViewMode('graphical');
+                      setOpenMenuGroup(null);
+                    }}
+                    className={`w-full px-3 py-2 text-left text-[10px] font-bold uppercase tracking-wider flex items-center justify-between hover:bg-indigo-50 transition-colors ${
+                      activeAnalyticsTab === 'trends' && viewMode === 'graphical'
+                        ? 'text-indigo-700 bg-indigo-50/50 font-black'
+                        : 'text-slate-700'
+                    }`}
+                  >
+                    <span>Tree Analytics (Graphical)</span>
+                    {activeAnalyticsTab === 'trends' && viewMode === 'graphical' && <Check size={12} className="text-indigo-600" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveAnalyticsTab('expenses');
+                      setOpenMenuGroup(null);
+                    }}
+                    className={`w-full px-3 py-2 text-left text-[10px] font-bold uppercase tracking-wider flex items-center justify-between hover:bg-indigo-50 transition-colors ${
+                      activeAnalyticsTab === 'expenses'
+                        ? 'text-indigo-700 bg-indigo-50/50 font-black'
+                        : 'text-slate-700'
+                    }`}
+                  >
+                    <span>Expense Category Split</span>
+                    {activeAnalyticsTab === 'expenses' && <Check size={12} className="text-indigo-600" />}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Pillar 5: Workforce & Teams (Employee Roster + Employee Analysis + Team View) */}
+          <div
+            className="relative"
+            onMouseEnter={() => setOpenMenuGroup('workforce')}
+            onMouseLeave={() => setOpenMenuGroup(null)}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                if (!isWorkforceGroup) setActiveAnalyticsTab('roster');
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                isWorkforceGroup
+                  ? 'bg-white text-indigo-700 shadow-xs ring-1 ring-indigo-200/80'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Users size={13} className={isWorkforceGroup ? 'text-indigo-600' : 'text-slate-400'} />
+              <span>Workforce & Teams</span>
+              <ChevronDown size={11} className="opacity-60" />
+            </button>
+
+            {openMenuGroup === 'workforce' && (
+              <div className="absolute top-full left-0 pt-1 w-56 z-[400]">
+                <div className="bg-white border border-slate-200 rounded-xl shadow-xl py-1.5 overflow-hidden">
+                  <div className="px-3 py-1 text-[8px] font-black uppercase tracking-widest text-slate-400">
+                    Workforce Analytics
+                  </div>
+                  {(
+                    [
+                      { id: 'roster', label: 'Employee Roster' },
+                      { id: 'analysis', label: 'Employee Analysis' },
+                      { id: 'team', label: 'Consolidated Team View' }
+                    ] as const
+                  ).map(item => {
+                    const active = activeAnalyticsTab === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          setActiveAnalyticsTab(item.id);
+                          setOpenMenuGroup(null);
+                        }}
+                        className={`w-full px-3 py-2 text-left text-[10px] font-bold uppercase tracking-wider flex items-center justify-between hover:bg-indigo-50 transition-colors ${
+                          active ? 'text-indigo-700 bg-indigo-50/50 font-black' : 'text-slate-700'
+                        }`}
+                      >
+                        <span>{item.label}</span>
+                        {active && <Check size={12} className="text-indigo-600" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right: Active Pillar Sub-View Pills & Contextual Mode Controls */}
+        <div className="flex flex-wrap items-center gap-2">
+          {isComparativeGroup && (
+            <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200/70">
+              {(
+                [
+                  { id: 'table', label: 'Variance Table' },
+                  { id: 'burndown', label: 'Burn-Down Chart' },
+                  { id: 'dept_charts', label: 'Dept & Family Charts' }
+                ] as const
+              ).map(sub => (
+                <button
+                  key={sub.id}
+                  type="button"
+                  onClick={() => setComparativeSubView(sub.id)}
+                  className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                    comparativeSubView === sub.id
+                      ? 'bg-white text-indigo-700 shadow-xs'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  {sub.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {isConsolidatedMonthlyGroup && (
+            <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200/70">
+              <button
+                type="button"
+                onClick={() => setViewMode('tabular')}
+                className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                  viewMode === 'tabular'
+                    ? 'bg-white text-indigo-700 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Monthly Table
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('graphical')}
+                className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                  viewMode === 'graphical'
+                    ? 'bg-white text-indigo-700 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Monthly Charts
+              </button>
+            </div>
+          )}
+
+          {isFamilyGroup && (
+            <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200/70">
+              {(
+                [
+                  { id: 'portfolio_tree', label: 'Portfolio Tree' },
+                  { id: 'scorecard', label: 'Family Scorecard' },
+                  { id: 'matrix', label: 'Generation Matrix' },
+                  { id: 'efficiency', label: 'Efficiency Chart' }
+                ] as const
+              ).map(sub => (
+                <button
+                  key={sub.id}
+                  type="button"
+                  onClick={() => setFamilySubView(sub.id)}
+                  className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                    familySubView === sub.id
+                      ? 'bg-white text-[#0082ca] shadow-xs'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  {sub.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {isCostGroup && (
+            <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200/70">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveAnalyticsTab('trends');
+                  setViewMode('tabular');
+                }}
+                className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                  activeAnalyticsTab === 'trends' && viewMode === 'tabular'
+                    ? 'bg-white text-indigo-700 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Tree Table
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveAnalyticsTab('trends');
+                  setViewMode('graphical');
+                }}
+                className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                  activeAnalyticsTab === 'trends' && viewMode === 'graphical'
+                    ? 'bg-white text-indigo-700 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Tree Charts
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveAnalyticsTab('consolidated_monthly');
+                  setViewMode('tabular');
+                }}
+                className="px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all text-slate-500 hover:text-slate-800"
+              >
+                Consolidated Monthly
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveAnalyticsTab('expenses')}
+                className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                  activeAnalyticsTab === 'expenses'
+                    ? 'bg-white text-indigo-700 shadow-xs'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Expense Split
+              </button>
+            </div>
+          )}
+
+          {isWorkforceGroup && (
+            <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200/70">
+              {(
+                [
+                  { id: 'roster', label: 'Roster' },
+                  { id: 'analysis', label: 'Employee Analysis' },
+                  { id: 'team', label: 'Team View' }
+                ] as const
+              ).map(sub => (
+                <button
+                  key={sub.id}
+                  type="button"
+                  onClick={() => setActiveAnalyticsTab(sub.id)}
+                  className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all ${
+                    activeAnalyticsTab === sub.id
+                      ? 'bg-white text-indigo-700 shadow-xs'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  {sub.label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Mode & View Controls for Cost, Consolidated Monthly & Workforce Views */}
+          {!isComparativeGroup && !isFamilyGroup && (
+            <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
+              <div className="flex items-center gap-1.5">
+                {(['Budget', 'Actuals'] as FiscalMode[]).map(m => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => toggleMode(m)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[9px] font-black uppercase tracking-wider transition-all ${
+                      selectedModes.includes(m)
+                        ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                        : 'bg-white border-slate-200 text-slate-400 hover:text-slate-600'
+                    }`}
+                  >
+                    <div
+                      className={`w-3 h-3 rounded flex items-center justify-center ${
+                        selectedModes.includes(m) ? 'bg-indigo-600 text-white' : 'border border-slate-300'
+                      }`}
+                    >
+                      {selectedModes.includes(m) && <Check size={9} strokeWidth={3} />}
+                    </div>
+                    <span>{m}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
-      {activeAnalyticsTab === 'roster' ? (
+      {activeAnalyticsTab === 'comparative' ? (
+        <ComparativeAnalysisView 
+          projects={filteredProjects} 
+          months={months} 
+          selectedFY={selectedFY} 
+          viewMode={viewMode} 
+          setViewMode={setViewMode} 
+          totalsLookup={totalsLookup}
+          config={config}
+          calculateProjectCost={calculateProjectCost}
+          getActiveProjectData={getActiveProjectData}
+          activeSubView={comparativeSubView}
+          onSubViewChange={setComparativeSubView}
+        />
+      ) : activeAnalyticsTab === 'roster' ? (
         <EmployeeRoster employees={employees} projects={projects} months={months} viewMode={viewMode} selectedFY={selectedFY} mode={selectedModes} />
       ) : activeAnalyticsTab === 'analysis' ? (
         <EmployeeAnalysis employees={employees} projects={projects} months={months} selectedFY={selectedFY} mode={selectedModes} />
@@ -1418,445 +2001,48 @@ const PMOAnalyticsView: React.FC<PMOAnalyticsViewProps> = ({ projects, months, e
           <ConsolidatedTeamView employees={employees} selectedFY={selectedFY} projects={projects} mode={selectedModes} />
         </div>
       ) : activeAnalyticsTab === 'family' ? (
-        <FamilyView projects={filteredProjects} efficiencyData={familyEfficiencyData} viewMode={viewMode} />
+        <FamilyView
+          projects={filteredProjects}
+          opportunities={opportunities}
+          efficiencyData={familyEfficiencyData}
+          viewMode={viewMode}
+          config={config}
+          totalsLookup={totalsLookup}
+          calculateProjectCost={calculateProjectCost}
+          activeSubView={familySubView}
+          onSubViewChange={setFamilySubView}
+        />
       ) : activeAnalyticsTab === 'expenses' ? (
         <ExpenseList projects={filteredProjects} months={months} mode={selectedModes} selectedFY={selectedFY} />
       ) : (
         <>
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-2xl font-black text-slate-900 uppercase tracking-tighter">Consolidated Budget & Actuals Summary</h3>
-              <div className="flex gap-2">
-                <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-
-              </div>
-            </div>
-
-            {viewMode === 'tabular' ? (
-              <div className="overflow-x-auto border border-slate-200 rounded-xl bg-slate-50/10">
-                <table className="w-full text-left border-collapse font-sans bg-white">
-                  <thead>
-                    <tr className="bg-slate-900 text-white text-[10px] uppercase tracking-[0.2em] font-black">
-                      <th className="px-4 py-3 border-r border-white/10 min-w-[280px]">
-                        Category <span className="text-slate-500 ml-1">↑</span>
-                      </th>
-                      <th className="px-4 py-3 border-r border-white/10 text-right">MM</th>
-                      <th className="px-4 py-3 border-r border-white/10 text-right">MM Expenses</th>
-                      <th className="px-4 py-3 border-r border-white/10 text-right">% MM</th>
-                      <th className="px-4 py-3 border-r border-white/10 text-right">Expenses</th>
-                      <th className="px-4 py-3 border-r border-white/10 text-right">% Exp</th>
-                      <th className="px-4 py-3 border-r border-white/10 text-right">Total</th>
-                      <th className="px-4 py-3 border-r border-white/10 text-right">Average</th>
-                      <th className="px-4 py-3 border-r border-white/10 text-right">% Tot</th>
-                      <th className="px-4 py-3 border-r border-white/10 text-center">New</th>
-                      <th className="px-4 py-3 text-center">CarryOver</th>
-                    </tr>
-                  </thead>
-                  <tbody className="text-[13px] text-slate-700">
-                    {aggregatedData.map(row => {
-                      const modeGrandTotal = grandTotals[row.mode || 'Budget'] || { manpowerMM: 0, manpowerCr: 0, expenseCr: 0, totalCr: 0, budgetCr: 0 };
-                      const mmExpPercentage = modeGrandTotal.manpowerCr > 0 ? (row.manpowerCr / modeGrandTotal.manpowerCr) * 100 : 0;
-                      const expPercentage = modeGrandTotal.expenseCr > 0 ? (row.expenseCr / modeGrandTotal.expenseCr) * 100 : 0;
-                      const totalPercentage = modeGrandTotal.totalCr > 0 ? (row.totalCr / modeGrandTotal.totalCr) * 100 : 0;
-                      
-                      const isSub = row.isSubCategory;
-                      const isHeader = ['Projects', 'Product Maintenance', 'Project Support', 'Organization Support'].includes(row.categoryKey) && !isSub;
-                      
-                      // Hide sub-categories if parent is collapsed
-                      if (isSub && row.parent && !expandedCategories[row.parent]) {
-                        return null;
-                      }
-
-                      const newPercentage = row.manpowerMM > 0 ? (row.newMM / row.manpowerMM) * 100 : 0;
-                      const carryOverPercentage = row.manpowerMM > 0 ? (row.carryOverMM / row.manpowerMM) * 100 : 0;
-
-                      return (
-                        <tr 
-                          key={row.key} 
-                          className={`
-                            group transition-colors border-b border-slate-100 
-                            ${isHeader ? 'bg-slate-50/50 cursor-pointer hover:bg-slate-100' : 'hover:bg-slate-50/80'}
-                          `}
-                          onClick={isHeader ? () => toggleCategory(row.categoryKey) : undefined}
-                        >
-                          <td className={`px-4 py-2 border-r border-slate-100 flex items-center gap-1.5 ${isSub ? 'pl-10 italic opacity-80' : 'font-bold uppercase text-[11px] tracking-tight'}`}>
-                            {isHeader && (
-                              expandedCategories[row.categoryKey] ? <ChevronDown size={14} className="text-slate-400 shrink-0" /> : <ChevronRight size={14} className="text-slate-400 shrink-0" />
-                            )}
-                            <span className="truncate max-w-[200px]" title={row.name}>{row.name}</span>
-                            <span className={`px-1.5 py-0.5 rounded-[4px] text-[8px] font-black uppercase tracking-widest select-none shrink-0 border ${
-                              row.mode === 'Budget' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                              row.mode === 'Actuals' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                              'bg-purple-50 text-purple-700 border-purple-200'
-                            }`}>
-                              {row.mode}
-                            </span>
-                          </td>
-                          <td className="px-4 py-2 border-r border-slate-100 text-right font-mono text-[12px]">
-                            {(row.manpowerMM || 0).toFixed(2)}
-                          </td>
-                          <td className="px-4 py-2 border-r border-slate-100 text-right font-mono text-[12px]">
-                            ₹ {formatCr(row.manpowerCr || 0, 2)}
-                          </td>
-                          <td className="px-4 py-2 border-r border-slate-100 text-right font-mono text-[10px] text-slate-400">
-                            {(mmExpPercentage || 0).toFixed(2)}%
-                          </td>
-                          <td className="px-4 py-2 border-r border-slate-100 text-right font-mono text-[12px]">
-                            ₹ {formatCr(row.expenseCr || 0, 2)}
-                          </td>
-                          <td className="px-4 py-2 border-r border-slate-100 text-right font-mono text-[10px] text-slate-400">
-                            {(expPercentage || 0).toFixed(2)}%
-                          </td>
-                          <td className="px-4 py-2 border-r border-slate-100 text-right font-black font-mono text-[13px] text-slate-900">
-                            ₹ {formatCr(row.totalCr || 0, 2)}
-                          </td>
-                          <td className="px-4 py-2 border-r border-slate-100 text-right font-mono text-[12px] text-slate-500">
-                            ₹ {formatCr((row.totalCr || 0) / (months.length || 1), 2)}
-                          </td>
-                          <td className="px-4 py-2 border-r border-slate-100 text-right font-mono text-[10px] text-slate-400">
-                            {(totalPercentage || 0).toFixed(2)}%
-                          </td>
-                          <td className="px-4 py-2 border-r border-slate-100 text-center font-mono text-[12px]">
-                            {newPercentage > 0 ? (
-                              <div className="flex items-center justify-center gap-1.5">
-                                <div className="h-1.5 w-1.5 rounded-full bg-blue-500" />
-                                <span>{newPercentage.toFixed(1)}%</span>
-                              </div>
-                            ) : (
-                              <span className="text-slate-400">0%</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-2 text-center font-mono text-[12px]">
-                            {carryOverPercentage > 0 ? (
-                              <div className="flex items-center justify-center gap-1.5">
-                                <div className="h-1.5 w-1.5 rounded-full bg-orange-500" />
-                                <span>{carryOverPercentage.toFixed(1)}%</span>
-                              </div>
-                            ) : (
-                              <span className="text-slate-400">0%</span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {['Budget', 'Actuals', 'Forecast'].filter(m => selectedModes.includes(m as any)).map(modeVal => {
-                      const total = grandTotals[modeVal];
-                      if (!total) return null;
-                      const isBudget = modeVal === 'Budget';
-                      const isActuals = modeVal === 'Actuals';
-                      
-                      const modeBgColor = 'bg-slate-900';
-                      const modeAccentColor = isBudget ? 'text-blue-400' : (isActuals ? 'text-emerald-400' : 'text-purple-400');
-                      const borderLeftColor = isBudget ? 'border-l-blue-500' : (isActuals ? 'border-l-emerald-500' : 'border-l-purple-500');
-
-                      const grandNewPct = total.manpowerMM > 0 ? ((total.newMM / total.manpowerMM) * 100).toFixed(1) : '0';
-                      const grandCarryPct = total.manpowerMM > 0 ? ((total.carryOverMM / total.manpowerMM) * 100).toFixed(1) : '0';
-
-                      return (
-                        <tr key={`grand-total-${modeVal}`} className={`${modeBgColor} text-white font-black border-b border-slate-800 border-l-[6px] ${borderLeftColor}`}>
-                          <td className="px-4 py-3 border-r border-white/20 uppercase tracking-[0.2em] text-[10px]">
-                            Grand Total ({modeVal})
-                          </td>
-                          <td className="px-4 py-3 border-r border-white/20 text-right font-mono text-sm">{total.manpowerMM.toFixed(2)}</td>
-                          <td className="px-4 py-3 border-r border-white/20 text-right font-mono text-sm">₹ {formatCr(total.manpowerCr, 2)}</td>
-                          <td className="px-4 py-3 border-r border-white/20 text-right font-mono text-sm opacity-50">{total.manpowerMM > 0 ? '100%' : '0%'}</td>
-                          <td className="px-4 py-3 border-r border-white/20 text-right font-mono text-sm">₹ {formatCr(total.expenseCr, 2)}</td>
-                          <td className="px-4 py-3 border-r border-white/20 text-right font-mono text-sm opacity-50">{total.expenseCr > 0 ? '100%' : '0%'}</td>
-                          <td className={`px-4 py-3 border-r border-white/20 text-right font-mono text-lg ${modeAccentColor}`}>₹ {formatCr(total.totalCr, 2)}</td>
-                          <td className="px-4 py-3 border-r border-white/20 text-right font-mono text-sm opacity-50">₹ {formatCr(total.totalCr / (months.length || 1), 2)}</td>
-                          <td className="px-4 py-3 border-r border-white/20 text-right font-mono text-sm opacity-50">{total.totalCr > 0 ? '100%' : '0%'}</td>
-                          <td className="px-4 py-3 border-r border-white/20 text-center font-mono">{grandNewPct}%</td>
-                          <td className="px-4 py-3 text-center font-mono">{grandCarryPct}%</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+          {activeAnalyticsTab === 'trends' && (
+            viewMode === 'tabular' ? (
+              <AnalyticsTreeTable 
+                tree={analyticsTree} 
+                months={months} 
+                selectedModes={selectedModes} 
+                toggleMode={toggleMode} 
+                totalsLookup={totalsLookup} 
+              />
             ) : (
-              <div className="space-y-6">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    {selectedCategory && (
-                      <button 
-                        onClick={() => {
-                          if (selectedCategory.includes(':')) {
-                            setSelectedCategory(selectedCategory.split(':')[0]);
-                          } else {
-                            setSelectedCategory(null);
-                          }
-                        }}
-                        className="p-2 hover:bg-slate-100 rounded-full transition-colors"
-                        title="Go Back"
-                      >
-                        <ArrowRight className="w-4 h-4 rotate-180" />
-                      </button>
-                    )}
-                    <h3 className="text-lg font-black uppercase tracking-tighter text-slate-800">
-                      {selectedCategory ? `Drill-down: ${selectedCategory}` : 'Executive Summary Trends'}
-                    </h3>
-                  </div>
-                  {selectedCategory && (
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                      Click "Back" to return to {selectedCategory.includes(':') ? 'category' : 'top-level'} view
-                    </span>
-                  )}
-                </div>
+              <AnalyticsTreeGraphical 
+                tree={analyticsTree} 
+                selectedModes={selectedModes} 
+                months={months} 
+              />
+            )
+          )}
 
-                {/* Key Metrics for Selected Category */}
-                {(() => {
-                  const activeModeForSummary = chartActiveMode || selectedModes[0] || 'Budget';
-                  const projectData = selectedCategory 
-                    ? graphicalData.filter(d => d.isProject)
-                    : projects.map(p => {
-                        const costs = calculateProjectCost(p, activeModeForSummary);
-                        const activeSource = getActiveProjectData(p, activeModeForSummary);
-                        
-                        const skillsOnly: Record<string, number[]> = {};
-                        const expensesOnly: Record<string, number[]> = {};
-
-                        if (activeSource) {
-                          Object.entries(activeSource).forEach(([skill, monthsData]) => {
-                            const arr = getFYArray(monthsData);
-                            const mappedCat = SKILL_MAPPING[skill] || skill;
-                            const isContracted = mappedCat === 'Contracted Employee';
-                            const isContractedExp = mappedCat === 'Contracted Employee Expense';
-                            const isManpower = MANPOWER_CATEGORIES.includes(mappedCat as any) || isContracted;
-                            const isExpense = EXPENSE_CATEGORIES.includes(mappedCat as any) || isContractedExp;
-                            
-                            if (isManpower) skillsOnly[skill] = arr;
-                            if (isExpense) expensesOnly[skill] = arr;
-                          });
-                        }
-
-                        return {
-                          ...p,
-                          manpowerMM: costs.mm,
-                          manpowerCr: costs.manpowerCr,
-                          expenseCr: costs.expenseCr,
-                          totalCr: costs.totalCr,
-                          budgetCr: calculateProjectCost(p, 'Budget').totalCr,
-                          isProject: true,
-                          skills: skillsOnly,
-                          expenses: expensesOnly
-                        };
-                      });
-                  
-                  const getSum = (val: any) => Array.isArray(val) ? val.reduce((a: number, b: number) => a + (Number(b) || 0), 0) : (Number(val) || 0);
-                  
-                  const totalDirectManpowerMM = projectData.reduce((acc, d) => acc + (d.manpowerMM - getSum(d.skills?.['Contracted Employee'])), 0);
-                  const totalContractedManpowerMM = projectData.reduce((acc, d) => acc + getSum(d.skills?.['Contracted Employee']), 0);
-                  const totalDirectCost = projectData.reduce((acc, d) => acc + (d.manpowerCr - (getSum(d.expenses?.['Contracted Employee Expense']) / 10000000)), 0);
-                  const totalContractedCost = projectData.reduce((acc, d) => acc + (getSum(d.expenses?.['Contracted Employee Expense']) / 10000000), 0);
-                  const totalOtherExpenses = projectData.reduce((acc, d) => acc + d.expenseCr, 0);
-
-                  return (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                      {[
-                        { label: 'Direct Manpower', value: `${totalDirectManpowerMM.toFixed(2)} MM`, icon: Users, color: 'text-blue-600', bg: 'bg-blue-50' },
-                        { label: 'Contracted Manpower', value: `${totalContractedManpowerMM.toFixed(2)} MM`, icon: UserPlus, color: 'text-indigo-600', bg: 'bg-indigo-50' },
-                        { label: 'Total People Cost', value: `₹${formatCr(totalDirectCost + totalContractedCost)}`, icon: TrendingUp, color: 'text-emerald-600', bg: 'bg-emerald-50' },
-                        { label: 'Other Expenses', value: `₹${formatCr(totalOtherExpenses)}`, icon: CreditCard, color: 'text-orange-600', bg: 'bg-orange-50' },
-                      ].map((metric, i) => (
-                        <div key={i} className={`${metric.bg} p-4 rounded-xl border border-slate-200 flex items-center gap-4`}>
-                          <div className={`p-2 rounded-lg bg-white shadow-sm ${metric.color}`}>
-                            <metric.icon className="w-5 h-5" />
-                          </div>
-                          <div>
-                            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{metric.label}</p>
-                            <p className={`text-lg font-black tracking-tighter ${metric.color}`}>{metric.value}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })()}
-
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                  <div className="bg-white/50 rounded-xl p-6 border border-slate-200 overflow-y-auto h-[400px]">
-                    <h4 className="text-xs font-black uppercase tracking-widest mb-6 text-slate-500">Strategic Health Index</h4>
-                    <div className="space-y-6">
-                      {graphicalData.filter(d => d.totalCr > 0).map(row => {
-                        const variance = row.budgetCr > 0 ? (row.totalCr / row.budgetCr) : 1;
-                        // Likert scale 1-5: 1 (Under), 3 (On Track), 5 (Over)
-                        let score = 3;
-                        if (variance < 0.8) score = 1;
-                        else if (variance < 0.95) score = 2;
-                        else if (variance <= 1.05) score = 3;
-                        else if (variance <= 1.2) score = 4;
-                        else score = 5;
-
-                        const labels = ['Critical Under', 'Under', 'Optimal', 'Over', 'Critical Over'];
-                        const colors = ['bg-blue-400', 'bg-blue-200', 'bg-emerald-400', 'bg-orange-300', 'bg-rose-500'];
-
-                        return (
-                          <div key={row.key} className="space-y-2">
-                            <div className="flex justify-between items-end">
-                              <span className="text-[10px] font-black uppercase tracking-tighter text-slate-900">{row.name}</span>
-                              <span className="text-[9px] font-mono text-slate-400">{labels[score-1]} ({ (variance * 100).toFixed(2) }%)</span>
-                            </div>
-                            <div className="grid grid-cols-5 gap-1 h-2">
-                              {[1, 2, 3, 4, 5].map(i => (
-                                <div 
-                                  key={i} 
-                                  className={`rounded-sm transition-all duration-500 ${i <= score ? colors[score-1] : 'bg-slate-100'}`}
-                                />
-                              ))}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  <div className="h-[400px] bg-white/50 rounded-xl p-4 border border-slate-200">
-                    <h4 className="text-xs font-black uppercase tracking-widest mb-4 text-slate-500">Resource Cost Mix</h4>
-                    {(() => {
-                      const totalDirectCost = graphicalData.reduce((acc, d) => acc + d.manpowerCr, 0);
-                      const totalContractedCost = graphicalData.reduce((acc, d) => acc + ((d.expenses?.['Contracted Employee Expense'] || 0) / 10000000), 0);
-                      const totalOtherExpenses = graphicalData.reduce((acc, d) => acc + (d.expenseCr - ((d.expenses?.['Contracted Employee Expense'] || 0) / 10000000)), 0);
-
-                      return (
-                        <ResponsiveContainer width="100%" height="100%">
-                          <PieChart>
-                            <Pie
-                              data={[
-                                { name: 'Direct People', value: totalDirectCost },
-                                { name: 'Contracted People', value: totalContractedCost },
-                                { name: 'Operational Exp', value: totalOtherExpenses }
-                              ]}
-                              cx="50%"
-                              cy="50%"
-                              innerRadius={60}
-                              outerRadius={80}
-                              paddingAngle={5}
-                              dataKey="value"
-                              label={({ name, value }) => `${name}: ₹${formatCr(value)}`}
-                            >
-                              <Cell fill="#3b82f6" />
-                              <Cell fill="#6366f1" />
-                              <Cell fill="#f59e0b" />
-                            </Pie>
-                            <Tooltip 
-                              formatter={(value: number) => `₹${formatCr(value, 2)}`}
-                              contentStyle={{ backgroundColor: '#1e293b', border: 'none', borderRadius: '8px', color: '#f8fafc', fontSize: '10px' }}
-                            />
-                            <Legend verticalAlign="bottom" height={36}/>
-                          </PieChart>
-                        </ResponsiveContainer>
-                      );
-                    })()}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                  <div className="h-[400px] bg-white/50 rounded-xl p-4 border border-slate-200 overflow-hidden flex flex-col">
-                    <h4 className="text-xs font-black uppercase tracking-widest mb-4 text-slate-500">Resource Allocation (MM)</h4>
-                    <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
-                      <div style={{ height: Math.max(350, graphicalData.length * 35) }}>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <BarChart 
-                            data={graphicalData}
-                            layout="vertical"
-                            margin={{ left: 20, right: 40 }}
-                            onClick={(data) => {
-                              if (data && data.activeLabel) {
-                                const clickedItem = graphicalData.find(d => d.name === data.activeLabel);
-                                if (clickedItem && !clickedItem.isProject) {
-                                  setSelectedCategory(clickedItem.key);
-                                }
-                              }
-                            }}
-                          >
-                            <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#cbd5e1" strokeOpacity={0.5} />
-                            <XAxis type="number" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#64748b' }} />
-                            <YAxis 
-                              type="category" 
-                              dataKey="name" 
-                              axisLine={false} 
-                              tickLine={false} 
-                              tick={{ fontSize: 9, fill: '#1e293b', fontWeight: 600 }} 
-                              width={120}
-                            />
-                            <Tooltip 
-                              cursor={{ fill: '#1e293b', fillOpacity: 0.05 }}
-                              content={<CustomTooltip type="manpower" />}
-                            />
-                            {selectedModes.map((m) => (
-                              <Bar 
-                                key={m}
-                                name={`${m} (MM)`}
-                                dataKey={`${m} manpowerMM`} 
-                                radius={[0, 4, 4, 0]}
-                                fill={m === 'Budget' ? '#64748b' : (m === 'Actuals' ? '#10b981' : '#8b5cf6')}
-                                barSize={selectedModes.length > 1 ? 12 : 20}
-                              >
-                                <LabelList dataKey={`${m} manpowerMM`} position="right" style={{ fontSize: '9px', fill: '#64748b', fontWeight: 'bold' }} formatter={(v: number) => formatMM(v)} />
-                              </Bar>
-                            ))}
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="h-[400px] bg-white/50 rounded-xl p-4 border border-slate-200 overflow-hidden flex flex-col">
-                    <h4 className="text-xs font-black uppercase tracking-widest mb-4 text-slate-500">Budget Utilization</h4>
-                    <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar">
-                      <div style={{ height: Math.max(350, graphicalData.length * 35) }}>
-                        <ResponsiveContainer width="100%" height="100%">
-                          <ComposedChart 
-                            data={graphicalData}
-                            layout="vertical"
-                            margin={{ left: 20, right: 40 }}
-                            onClick={(data) => {
-                              if (data && data.activeLabel) {
-                                const clickedItem = graphicalData.find(d => d.name === data.activeLabel);
-                                if (clickedItem && !clickedItem.isProject) {
-                                  setSelectedCategory(clickedItem.key);
-                                }
-                              }
-                            }}
-                          >
-                            <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#cbd5e1" strokeOpacity={0.5} />
-                            <XAxis type="number" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: '#64748b' }} />
-                            <YAxis 
-                              type="category" 
-                              dataKey="name" 
-                              axisLine={false} 
-                              tickLine={false} 
-                              tick={{ fontSize: 9, fill: '#1e293b', fontWeight: 600 }} 
-                              width={120}
-                            />
-                            <Tooltip 
-                              cursor={{ fill: '#1e293b', fillOpacity: 0.05 }}
-                              content={<CustomTooltip type="expense" />}
-                            />
-                            {selectedModes.map((m) => (
-                              <Bar 
-                                key={m}
-                                name={`${m} Actual`}
-                                dataKey={`${m} totalCr`} 
-                                radius={[0, 4, 4, 0]}
-                                fill={m === 'Budget' ? '#475569' : (m === 'Actuals' ? '#059669' : '#7c3aed')}
-                                barSize={selectedModes.length > 1 ? 12 : 20}
-                              >
-                                <LabelList dataKey={`${m} totalCr`} position="right" formatter={(v: number) => `₹${formatCr(v, 2)}`} style={{ fontSize: '9px', fill: '#64748b', fontWeight: 'bold' }} />
-                              </Bar>
-                            ))}
-                            <Line name="Budget (Cr)" type="monotone" dataKey="budgetCr" stroke="#f59e0b" strokeWidth={2} dot={{ r: 4, fill: '#f59e0b' }} />
-                          </ComposedChart>
-                        </ResponsiveContainer>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
-            <h3 className="text-xl font-black text-slate-900 uppercase tracking-tighter mb-4">Consolidated Budget (Monthly)</h3>
-            {(() => { console.log("[DEBUG] selectedModes:", selectedModes, "length:", selectedModes.length); return null; })()}
-            {viewMode === 'tabular' ? (
+          <AnalyticsTreeMonthly 
+            tree={analyticsTree}
+            months={months}
+            selectedModes={selectedModes}
+            viewMode={viewMode}
+            setViewMode={setViewMode}
+            renderFunctionalSkillsView={() => (
+              <div className="space-y-4">
+                {viewMode === 'tabular' ? (
               <div className="overflow-x-auto border border-slate-200 rounded-xl">
                 <table className="w-full text-left border-collapse font-sans">
                   <thead className="bg-slate-900 z-20">
@@ -2199,7 +2385,9 @@ const PMOAnalyticsView: React.FC<PMOAnalyticsViewProps> = ({ projects, months, e
               </div>
             )}
           </div>
-        </>
+        )}
+      />
+    </>
       )}
     </div>
   );

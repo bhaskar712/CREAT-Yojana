@@ -121,7 +121,7 @@ const app = express();
 app.use(cors({
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-sync-key']
+  allowedHeaders: ['Content-Type', 'Content-Encoding', 'Accept', 'Authorization', 'x-sync-key']
 }));
 app.use(express.json({ limit: '200mb' }));
 app.use(express.urlencoded({ extended: true, limit: '200mb' }));
@@ -279,18 +279,41 @@ app.get('/api/budgets', (req, res) => {
 app.get('/api/budgets/:id', (req, res) => {
   try {
     const row = db.prepare('SELECT data FROM budgets WHERE id = ?').get(req.params.id) as { data: string } | undefined;
-    if (row) {
-      const data = JSON.parse(row.data);
-      if (req.params.id !== 'global-budget-state') {
+    if (row && row.data) {
+      let data: any = {};
+      try {
+        data = JSON.parse(row.data) || {};
+      } catch (parseErr) {
+        console.warn(`Malformed JSON in budgets row ${req.params.id}, returning empty object.`);
+        data = {};
+      }
+      if (req.params.id === 'global-master-projects' && Array.isArray(data.masterProjects)) {
+        const seen = new Map<string, any>();
+        for (const mp of data.masterProjects) {
+          if (!mp) continue;
+          const key = ((mp.code && mp.code !== 'UMD-XXXX' && mp.code !== 'TBD') ? mp.code : (mp.name || mp.id || '')).toString().trim().toUpperCase();
+          if (key) seen.set(key, mp);
+        }
+        data.masterProjects = Array.from(seen.values());
+      }
+      if (req.params.id !== 'global-budget-state' && req.params.id !== 'global-resources' && req.params.id !== 'global-master-projects' && typeof data === 'object') {
         const globalRow = db.prepare('SELECT data FROM budgets WHERE id = ?').get('global-budget-state') as { data: string } | undefined;
-        if (globalRow) {
-          const globalData = JSON.parse(globalRow.data);
-          if (globalData.masterConfig) data.masterConfig = globalData.masterConfig;
-          if (globalData.users) data.users = globalData.users;
+        if (globalRow && globalRow.data) {
+          try {
+            const globalData = JSON.parse(globalRow.data) || {};
+            if (globalData.masterConfig) data.masterConfig = globalData.masterConfig;
+            if (globalData.users) data.users = globalData.users;
+          } catch (e) {}
         }
       }
       res.json({ data });
     } else {
+      if (req.params.id === 'global-resources') {
+        return res.json({ data: { employees: [] } });
+      }
+      if (req.params.id === 'global-master-projects') {
+        return res.json({ data: { masterProjects: [] } });
+      }
       res.status(404).json({ error: 'Not found' });
     }
   } catch (err) {
@@ -310,19 +333,26 @@ app.post('/api/budgets/batch-load', (req, res) => {
     
     const results: Record<string, any> = {};
     rows.forEach(row => {
-      results[row.id] = JSON.parse(row.data);
+      if (!row.data) return;
+      try {
+        results[row.id] = JSON.parse(row.data) || {};
+      } catch (e) {
+        results[row.id] = {};
+      }
     });
 
     // Mix in global data for any non-global IDs if needed
     const globalRow = db.prepare('SELECT data FROM budgets WHERE id = ?').get('global-budget-state') as { data: string } | undefined;
-    if (globalRow) {
-      const globalData = JSON.parse(globalRow.data);
-      rows.forEach(row => {
-        if (row.id !== 'global-budget-state') {
-          if (globalData.masterConfig) results[row.id].masterConfig = globalData.masterConfig;
-          if (globalData.users) results[row.id].users = globalData.users;
-        }
-      });
+    if (globalRow && globalRow.data) {
+      try {
+        const globalData = JSON.parse(globalRow.data) || {};
+        rows.forEach(row => {
+          if (row.id !== 'global-budget-state' && results[row.id]) {
+            if (globalData.masterConfig) results[row.id].masterConfig = globalData.masterConfig;
+            if (globalData.users) results[row.id].users = globalData.users;
+          }
+        });
+      } catch (e) {}
     }
 
     res.json({ data: results });
@@ -464,7 +494,7 @@ app.delete('/api/data/cleanup', (req, res) => {
 // Import from Excel
 app.post('/api/opportunities/import-excel', (req, res) => {
   try {
-    const filePath = path.join(process.cwd(), 'Data', 'PMTS_Handshake_Document_Corp_Marketing.xlsx');
+    const filePath = path.join(process.cwd(), 'data', 'AFY FY 26-27 Sept-26_Yojana.xlsx');
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({ error: 'Excel file not found in Data folder' });
     }
@@ -824,7 +854,7 @@ async function startServer() {
   // Vite middleware for development or static serving for production
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -857,27 +887,63 @@ async function startServer() {
     console.log(`On Your Network:  http://0.0.0.0:${PORT}`);
   });
 
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  const wss = new WebSocketServer({ noServer: true });
+
+  server.on('upgrade', (request, socket, head) => {
+    const url = request.url || '';
+    if (url === '/ws' || url.startsWith('/ws?')) {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    } else {
+      socket.destroy();
+    }
+  });
 
   wss.on('connection', (ws, req) => {
     const ip = req.socket.remoteAddress;
-    console.log(`🔌 New WS connection from ${ip}`);
+    (ws as any).isAlive = true;
+
+    ws.on('pong', () => {
+      (ws as any).isAlive = true;
+    });
     
     ws.on('message', (message) => {
       try {
         const data = JSON.parse(message.toString());
         if (data.type === 'IDENTIFY') {
           clientMap.set(ws, data.clientId);
-          console.log(`🆔 WS Client identified: ${data.clientId}`);
+        } else if (data.type === 'PING') {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'PONG' }));
+          }
         }
       } catch (e) {}
     });
 
     ws.on('close', () => {
-      console.log(`🔌 WS connection closed for ${ip}`);
       clientMap.delete(ws);
     });
-    ws.on('error', (err) => console.error(`❌ WS Error for ${ip}:`, err));
+    ws.on('error', () => {
+      clientMap.delete(ws);
+    });
+  });
+
+  const heartbeatInterval = setInterval(() => {
+    wss.clients.forEach((ws) => {
+      if ((ws as any).isAlive === false) {
+        clientMap.delete(ws);
+        return ws.terminate();
+      }
+      (ws as any).isAlive = false;
+      try {
+        ws.ping();
+      } catch (e) {}
+    });
+  }, 25000);
+
+  wss.on('close', () => {
+    clearInterval(heartbeatInterval);
   });
 }
 

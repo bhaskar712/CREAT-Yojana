@@ -623,7 +623,7 @@ const MasterConfig: React.FC<MasterConfigProps> = ({
                             <input 
                               type="number" 
                               className="w-full bg-transparent border-none px-2 py-2 outline-none font-mono text-slate-900 focus:bg-indigo-50/50 rounded-lg transition-all"
-                              value={settings.hourlyRate}
+                              value={settings.hourlyRate ?? 0}
                               onChange={(e) => handleFYFinancialUpdate(fy, 'hourlyRate', e.target.value)}
                             />
                           </td>
@@ -631,7 +631,7 @@ const MasterConfig: React.FC<MasterConfigProps> = ({
                             <input 
                               type="number" 
                               className="w-full bg-transparent border-none px-2 py-2 outline-none font-mono text-slate-900 focus:bg-indigo-50/50 rounded-lg transition-all"
-                              value={settings.contractedEmployeeRate ?? settings.hourlyRate}
+                              value={settings.contractedEmployeeRate ?? settings.hourlyRate ?? 0}
                               onChange={(e) => handleFYFinancialUpdate(fy, 'contractedEmployeeRate', e.target.value)}
                             />
                           </td>

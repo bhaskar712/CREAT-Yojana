@@ -1207,7 +1207,8 @@ export const DCBAPortal: React.FC<DCBAPortalProps> = ({ isAdmin, masterConfig, s
           // Value extraction with unit detection (Cr vs Lacs)
           
           // Improved unit detection: check if the SPECIFIC column used contains 'lac'
-          const valColKey = Object.keys(row).find(k => row[k] === valRaw)?.toLowerCase() || '';
+          const valColIndex = Object.keys(row).findIndex(k => row[k] === valRaw);
+          const valColKey = valColIndex !== -1 ? Object.keys(row)[valColIndex].toLowerCase() : '';
           const isLacs = valColKey.includes('lacs') || valColKey.includes('lac');
           
           const parseNum = (v: any) => {

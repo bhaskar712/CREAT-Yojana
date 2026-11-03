@@ -5,7 +5,7 @@ import ExcelJS from 'exceljs';
 import { motion } from 'motion/react';
 import { EstimationHeader } from './EstimationHeader';
 import { EstimationTable } from './EstimationTable';
-import { RATE_PER_HOUR, CONTRACTED_EMPLOYEE_RATE, HOURS_PER_MONTH, ALL_FISCAL_YEARS, DEFAULT_FY, SKILL_MAPPING, EXPENSE_MAPPING, EXPENSE_CATEGORIES, SKILL_ORDER, MAX_MONTHS, isConfirmedProject, normalizeSkill, isSummaryOrCalculatedLabel } from '../constants';
+import { RATE_PER_HOUR, CONTRACTED_EMPLOYEE_RATE, HOURS_PER_MONTH, ALL_FISCAL_YEARS, DEFAULT_FY, SKILL_MAPPING, EXPENSE_MAPPING, EXPENSE_CATEGORIES, SKILL_ORDER, MAX_MONTHS, isConfirmedProject, normalizeSkill, normalizeVertical, isSummaryOrCalculatedLabel } from '../constants';
 import { 
   ProjectData, 
   FiscalYear,
@@ -64,30 +64,49 @@ export const getAuthoritativeRowUI = (
   let res = checkArray(findInObj(p[sourceKey], cat));
   if (res) return res;
 
-  // 2. Check mode-specific skills (actualsSkills/forecastSkills)
+  // 2. Check mode-specific secondary sources
   if (sourceKey === 'actuals') {
-     res = checkArray(findInObj((p as any).actualsSkills, cat));
-     if (res) return res;
+    res = checkArray(findInObj((p as any).actualsSkills, cat));
+    if (res) return res;
   } else if (sourceKey === 'forecast') {
-     res = checkArray(findInObj((p as any).forecastSkills, cat));
-     if (res) return res;
+    res = checkArray(findInObj((p as any).forecastSkills, cat));
+    if (res) return res;
+  } else if (sourceKey === 'pmoRows') {
+    res = checkArray(findInObj(p.rows, cat)) ||
+          checkArray(findInObj((p as any).pmoSkills, cat)) ||
+          checkArray(findInObj(p.skills, cat)) ||
+          checkArray(findInObj(p.expenses, cat));
+    if (res) return res;
   }
 
   // 3. Check EmployeeSkills fallbacks
-  const empSkillsKey = sourceKey === 'actuals' ? 'actualsEmployeeSkills' : (sourceKey === 'forecast' ? 'forecastEmployeeSkills' : 'employeeSkills');
-  const targetEmployeeSkills = p[empSkillsKey] as any;
-  if (targetEmployeeSkills) {
-    const allocsObj = findInObj(targetEmployeeSkills, cat);
-    if (allocsObj) {
-      const sumRow = Array(MAX_MONTHS).fill(0);
-      Object.values(allocsObj).forEach((allocs: any) => {
-        if (Array.isArray(allocs)) {
-          allocs.forEach((val, i) => {
-            if (i < MAX_MONTHS) sumRow[i] += (val || 0);
-          });
-        }
-      });
-      if (sumRow.some(v => v !== 0)) return sumRow;
+  const empSkillsList = sourceKey === 'actuals'
+    ? [(p as any).actualsEmployeeSkills]
+    : sourceKey === 'forecast'
+    ? [(p as any).forecastEmployeeSkills]
+    : [(p as any).pmoEmployeeSkills, p.employeeSkills];
+
+  for (const targetEmployeeSkills of empSkillsList) {
+    if (targetEmployeeSkills) {
+      const allocsObj = findInObj(targetEmployeeSkills, cat);
+      if (allocsObj) {
+        const sumRow = Array(MAX_MONTHS).fill(0);
+        Object.values(allocsObj).forEach((allocs: any) => {
+          if (Array.isArray(allocs)) {
+            allocs.forEach((val, i) => {
+              if (i < MAX_MONTHS) sumRow[i] += (Number(val) || 0);
+            });
+          } else if (allocs && typeof allocs === 'object') {
+            Object.entries(allocs).forEach(([k, val]) => {
+              const idx = parseInt(k, 10);
+              if (!isNaN(idx) && idx >= 0 && idx < MAX_MONTHS) {
+                sumRow[idx] += (Number(val) || 0);
+              }
+            });
+          }
+        });
+        if (sumRow.some(v => v !== 0)) return sumRow;
+      }
     }
   }
 
@@ -513,7 +532,7 @@ const processRawData = (
         skills: {},
         expenses: {},
         igGates: [],
-        vertical: String(row[colIndices.vertical] || '').trim(),
+        vertical: normalizeVertical(String(row[colIndices.vertical] || '').trim()),
         category: String(row[colIndices.creatType] || '').trim(),
         productFamily: String(row[colIndices.productFamily] || '').trim(),
         generation: colIndices.generation !== -1 ? String(row[colIndices.generation] || '').trim() : 'Current',
@@ -716,7 +735,8 @@ const processRawData = (
       }
     } else if (isExpense) {
       let bucket = 'Others';
-      const cost = amount / 10000000; // Convert to Crores (preserve sign for negative values)
+      const costInr = amount;
+      const costCr = amount / 10000000; // Convert to Crores
       const expDetailRaw = colIndices.expenseDetail !== -1 ? String(row[colIndices.expenseDetail] || '').trim() : '';
       const bucketSource = (expBucketRaw || expDetailRaw || rawSkill || projectName || 'Others').trim();
       const normalizedSource = bucketSource.toLowerCase();
@@ -741,7 +761,7 @@ const processRawData = (
         }
       }
 
-      if (processedCount < 20) console.log(`Processing Expense row ${rowIndex}: Bucket=${bucket}, Amount=${cost}, MonthIdx=${monthIdx}`);
+      if (processedCount < 20) console.log(`Processing Expense row ${rowIndex}: Bucket=${bucket}, Amount=${costCr}, MonthIdx=${monthIdx}`);
 
       const detailName = clubExpenseDetail(expDetailRaw, projectCode, bucket);
       const targetCat = (bucket === 'Contracted Employee') ? 'Contracted Employee Expense' : bucket;
@@ -749,22 +769,22 @@ const processRawData = (
       if (!p.expenseDetails) p.expenseDetails = {};
       if (!p.expenseDetails[targetCat]) p.expenseDetails[targetCat] = {};
       if (!p.expenseDetails[targetCat][detailName]) p.expenseDetails[targetCat][detailName] = new Array(MAX_MONTHS).fill(0);
-      p.expenseDetails[targetCat][detailName][monthIdx] += cost;
+      p.expenseDetails[targetCat][detailName][monthIdx] += costInr;
 
       if (bucket === 'Contracted Employee') {
         if (!p.expenses['Contracted Employee Expense']) p.expenses['Contracted Employee Expense'] = new Array(MAX_MONTHS).fill(0);
-        p.expenses['Contracted Employee Expense'][monthIdx] += cost;
+        p.expenses['Contracted Employee Expense'][monthIdx] += costInr;
       } else {
         if (!p.expenses[bucket]) p.expenses[bucket] = new Array(MAX_MONTHS).fill(0);
-        p.expenses[bucket][monthIdx] += cost;
+        p.expenses[bucket][monthIdx] += costInr;
       }
       
-      p.monthlyActuals[monthIdx] += cost;
-      p.actualSpent += cost;
+      p.monthlyActuals[monthIdx] += costCr;
+      p.actualSpent += costCr;
       if (bucket === 'Contracted Employee' || bucket === 'Contracted Employee Expense') {
-        p.manpowerSpent += cost;
+        p.manpowerSpent += costCr;
       } else {
-        p.expenseSpent += cost;
+        p.expenseSpent += costCr;
       }
     }
  else {
@@ -918,13 +938,15 @@ const processRawData = (
       forecastFYs,
       budgetFYs,
       pmoSkills,
+      actualsSkills: (existing as any)?.actualsSkills || {},
+      forecastSkills: (existing as any)?.forecastSkills || {},
       skills,
       expenses,
       igGates: existing?.igGates || p.igGates || [],
       tbc: existing?.tbc || 'Yes',
-      vertical: existing?.vertical || p.vertical || 'SUPPORT',
+      vertical: normalizeVertical(existing?.vertical || p.vertical || 'Support'),
       category: existing?.category || p.category || 'NPC',
-      productFamily: existing?.productFamily || p.productFamily || 'SUPPORT',
+      productFamily: existing?.productFamily || p.productFamily || 'Support',
       pace: existing?.pace || '-',
       buDomain: existing?.buDomain || 'NA',
       pmoEmployeeSkills: nextPmoEmployeeSkills,
@@ -992,6 +1014,7 @@ interface PMOProps {
   onDeleteAll?: () => void;
   masterProjects?: MasterProject[];
   lastUpdated?: number;
+  totalsLookup?: Record<string, any>;
 }
 
 const isNew = (cat: string) => (cat || '').trim().toLowerCase().includes('new');
@@ -1068,7 +1091,8 @@ const PMO: React.FC<PMOProps> = ({
   isAdmin = false,
   onDeleteAll,
   masterProjects = [],
-  lastUpdated
+  lastUpdated,
+  totalsLookup
 }) => {
   const selectedFY = Array.isArray(selectedFYs) ? selectedFYs[0] : (selectedFYs as FiscalYear);
   
@@ -1925,14 +1949,16 @@ const PMO: React.FC<PMOProps> = ({
                 const { hRate, cRate } = ratesCache[i];
                 if (isContracted) {
                   const cost = v * cRate * hpm;
+                  const costCr = cost / 10000000;
                   if (!expenses['Contracted Employee Expense']) expenses['Contracted Employee Expense'] = new Array(MAX_MONTHS).fill(0);
-                  expenses['Contracted Employee Expense'][i] += cost;
-                  monthlyActuals[i] += cost;
+                  expenses['Contracted Employee Expense'][i] += costCr;
+                  monthlyActuals[i] += costCr;
                   manpowerSpent += cost;
                 } else {
                   const cost = v * hRate * hpm;
+                  const costCr = cost / 10000000;
                   if (!isHolidayLeave) {
-                    monthlyActuals[i] += cost;
+                    monthlyActuals[i] += costCr;
                     manpowerSpent += cost;
                   }
                 }
@@ -1947,16 +1973,17 @@ const PMO: React.FC<PMOProps> = ({
               const isSelectedMonth = isAllFY || fyStrings.includes(currentFyStr as any);
 
               if (isSelectedMonth) {
+                const vCr = v / 10000000;
                 if (isContractedExp) {
                   // Avoid double counting: only add if there's no manpower for this month
                   const mmVal = (skills['Contracted Employee'] || [])[i] || 0;
                   if (mmVal === 0) {
-                    monthlyActuals[i] += v;
+                    monthlyActuals[i] += vCr;
                     manpowerSpent += v;
                   }
                 } else {
                   expenseSpent += v;
-                  monthlyActuals[i] += v;
+                  monthlyActuals[i] += vCr;
                 }
               }
             });
@@ -2022,10 +2049,10 @@ const PMO: React.FC<PMOProps> = ({
         });
 
         const actualSpent = manpowerSpent + expenseSpent;
-        const portfolioBudgetCr = totalBudgetExpense;
-        const actualSpentCr = actualSpent;
-        const manpowerSpentCr = manpowerSpent;
-        const expenseSpentCr = expenseSpent;
+        const portfolioBudgetCr = totalBudgetExpense / 10000000;
+        const actualSpentCr = actualSpent / 10000000;
+        const manpowerSpentCr = manpowerSpent / 10000000;
+        const expenseSpentCr = expenseSpent / 10000000;
 
         const totalMM = monthlyFTEs.reduce((a, b) => a + b, 0);
 
@@ -2135,8 +2162,8 @@ const PMO: React.FC<PMOProps> = ({
         
         // In analytics view we want all projects with data in any selected mode to be visible
         const dataKeys = (activeTab === 'analytics') 
-          ? ['actuals', 'pmoRows', 'forecast'] 
-          : [mode === 'Actuals' ? 'actuals' : (mode === 'Forecast' ? 'forecast' : 'pmoRows')];
+          ? ['actuals', 'pmoRows', 'forecast', 'rows', 'skills', 'pmoSkills', 'actualsSkills', 'forecastSkills', 'expenses'] 
+          : (mode === 'Actuals' ? ['actuals', 'actualsSkills'] : (mode === 'Forecast' ? ['forecast', 'forecastSkills'] : ['pmoRows', 'rows', 'pmoSkills', 'skills', 'expenses']));
           
         let hasDataInScope = false;
         
@@ -2156,17 +2183,36 @@ const PMO: React.FC<PMOProps> = ({
         }
         
         dataKeys.forEach(dk => {
-          const dataSource = p[dk] || {};
+          const dataSource = (p as any)[dk] || {};
           Object.values(dataSource).forEach((data: any) => {
             if (Array.isArray(data)) {
               data.forEach((v, i) => {
-                if (validMonthIndices.has(i) && v > 0) hasDataInScope = true;
+                if (validMonthIndices.has(i) && Number(v) > 0) hasDataInScope = true;
               });
             } else if (data && typeof data === 'object') {
               Object.entries(data).forEach(([k, v]) => {
                 const idx = parseInt(k);
-                if (!isNaN(idx) && validMonthIndices.has(idx) && (v as number) > 0) {
+                if (!isNaN(idx) && validMonthIndices.has(idx) && Number(v) > 0) {
                   hasDataInScope = true;
+                }
+              });
+            }
+          });
+        });
+
+        const empSkillKeys = (activeTab === 'analytics')
+          ? ['actualsEmployeeSkills', 'pmoEmployeeSkills', 'forecastEmployeeSkills', 'employeeSkills']
+          : (mode === 'Actuals' ? ['actualsEmployeeSkills'] : (mode === 'Forecast' ? ['forecastEmployeeSkills'] : ['pmoEmployeeSkills', 'employeeSkills']));
+
+        empSkillKeys.forEach(ek => {
+          const empMap = (p as any)[ek] || {};
+          Object.values(empMap).forEach((skillEmails: any) => {
+            if (skillEmails && typeof skillEmails === 'object') {
+              Object.values(skillEmails).forEach((allocs: any) => {
+                if (Array.isArray(allocs)) {
+                  allocs.forEach((v, i) => {
+                    if (validMonthIndices.has(i) && Number(v) > 0) hasDataInScope = true;
+                  });
                 }
               });
             }
@@ -2243,8 +2289,12 @@ const PMO: React.FC<PMOProps> = ({
             ...Object.keys(p.actuals || {}),
             ...Object.keys(p.forecast || {}),
             ...Object.keys(p.skills || {}),
+            ...Object.keys((p as any).pmoSkills || {}),
+            ...Object.keys((p as any).actualsSkills || {}),
+            ...Object.keys((p as any).forecastSkills || {}),
             ...Object.keys(p.expenses || {}),
             ...Object.keys(p.employeeSkills || {}),
+            ...Object.keys((p as any).pmoEmployeeSkills || {}),
             ...Object.keys(p.actualsEmployeeSkills || {}),
             ...Object.keys(p.forecastEmployeeSkills || {})
           ]);
@@ -2291,33 +2341,73 @@ const PMO: React.FC<PMOProps> = ({
             }
           });
 
-          const expCr = Math.abs(expInr) > 1000 ? expInr / 10000000 : expInr;
+          const expCr = expInr / 10000000;
           const totalCr = (manInr / 10000000) + expCr;
           const manCr = manInr / 10000000;
           return { mm, manpowerCr: manCr, expensesCr: expCr, totalCr };
         };
 
-        const budgetTotals = calcModeTotals('pmoRows');
-        const currentTotals = mode === 'Actuals' ? calcModeTotals('actuals') : (mode === 'Forecast' ? calcModeTotals('forecast') : budgetTotals);
+        const pLookup = totalsLookup ? (totalsLookup[p.id] || (p.code ? totalsLookup[p.code] : undefined)) : undefined;
+        let bTotals = calcModeTotals('pmoRows');
+        let aTotals = calcModeTotals('actuals');
+        let fTotals = calcModeTotals('forecast');
+
+        if (pLookup) {
+          if (bTotals.totalCr === 0 && bTotals.mm === 0 && pLookup.budget && (pLookup.budget.grandTotalCrs > 0 || pLookup.budget.mm > 0)) {
+            bTotals = {
+              mm: pLookup.budget.mm || 0,
+              manpowerCr: pLookup.budget.manpowerCr || 0,
+              expensesCr: pLookup.budget.expensesCr || 0,
+              totalCr: pLookup.budget.grandTotalCrs || 0
+            };
+          }
+          if (aTotals.totalCr === 0 && aTotals.mm === 0 && pLookup.actuals && (pLookup.actuals.grandTotalCrs > 0 || pLookup.actuals.mm > 0)) {
+            aTotals = {
+              mm: pLookup.actuals.mm || 0,
+              manpowerCr: pLookup.actuals.manpowerCr || 0,
+              expensesCr: pLookup.actuals.expensesCr || 0,
+              totalCr: pLookup.actuals.grandTotalCrs || 0
+            };
+          }
+          if (fTotals.totalCr === 0 && fTotals.mm === 0 && pLookup.forecast && (pLookup.forecast.grandTotalCrs > 0 || pLookup.forecast.mm > 0)) {
+            fTotals = {
+              mm: pLookup.forecast.mm || 0,
+              manpowerCr: pLookup.forecast.manpowerCr || 0,
+              expensesCr: pLookup.forecast.expensesCr || 0,
+              totalCr: pLookup.forecast.grandTotalCrs || 0
+            };
+          }
+        }
+
+        const cTotals = activeTab === 'analytics'
+          ? aTotals
+          : (mode === 'Actuals' ? aTotals : (mode === 'Forecast' ? fTotals : bTotals));
 
         const isFixedMode = (p.budgetMode || 'detailed') === 'fixed';
-        const finalPortfolioBudgetCr = isFixedMode ? (p.portfolioBudgetCr || 0) : budgetTotals.totalCr;
+        const finalPortfolioBudgetCr = isFixedMode ? (p.portfolioBudgetCr || 0) : bTotals.totalCr;
 
         return {
           ...p,
+          vertical: normalizeVertical(p.vertical || 'Support'),
           pmoRows: p.pmoRows || {},
           actuals: p.actuals || {},
           forecast: p.forecast || {},
-          actualSpent: currentTotals.totalCr * 10000000,
-          manpowerSpent: currentTotals.manpowerCr * 10000000,
-          expenseSpent: currentTotals.expensesCr * 10000000,
+          actualSpent: cTotals.totalCr * 10000000,
+          manpowerSpent: cTotals.manpowerCr * 10000000,
+          expenseSpent: cTotals.expensesCr * 10000000,
           portfolioBudgetCr: finalPortfolioBudgetCr,
-          actualSpentCr: currentTotals.totalCr,
-          manpowerSpentCr: currentTotals.manpowerCr,
-          expenseSpentCr: currentTotals.expensesCr,
-          remaining: finalPortfolioBudgetCr - currentTotals.totalCr,
-          totalMM: currentTotals.mm,
-          burnRate: finalPortfolioBudgetCr > 0 ? (currentTotals.totalCr / finalPortfolioBudgetCr) * 100 : 0
+          actualSpentCr: cTotals.totalCr,
+          manpowerSpentCr: cTotals.manpowerCr,
+          expenseSpentCr: cTotals.expensesCr,
+          trueActualSpentCr: aTotals.totalCr,
+          trueActualManpowerSpentCr: aTotals.manpowerCr,
+          trueActualExpenseSpentCr: aTotals.expensesCr,
+          trueActualMM: aTotals.mm,
+          trueBudgetCr: finalPortfolioBudgetCr,
+          trueBudgetMM: bTotals.mm,
+          remaining: finalPortfolioBudgetCr - cTotals.totalCr,
+          totalMM: cTotals.mm,
+          burnRate: finalPortfolioBudgetCr > 0 ? (cTotals.totalCr / finalPortfolioBudgetCr) * 100 : 0
         };
       });
 
@@ -2399,7 +2489,14 @@ const PMO: React.FC<PMOProps> = ({
 
     const filteredResults = baseResults.filter((p: any) => {
       const searchStr = filters.search.toLowerCase().trim();
-      if (searchStr && !(p.code || '').toLowerCase().includes(searchStr) && !(p.name || '').toLowerCase().includes(searchStr)) return false;
+      if (
+        searchStr &&
+        !(p.code || '').toLowerCase().includes(searchStr) &&
+        !(p.name || '').toLowerCase().includes(searchStr) &&
+        !(p.productFamily || '').toLowerCase().includes(searchStr) &&
+        !(p.vertical || '').toLowerCase().includes(searchStr) &&
+        !(p.buDomain || '').toLowerCase().includes(searchStr)
+      ) return false;
       if (!filters.projectId.includes('All') && !filters.projectId.includes(p.code)) return false;
       if (!filters.vertical.includes('All') && !filters.vertical.includes(p.vertical)) return false;
       if (!filters.domain.includes('All') && !filters.domain.includes(p.buDomain)) return false;
@@ -3227,8 +3324,8 @@ const PMO: React.FC<PMOProps> = ({
   };
 
   return (
-    <div key={renderKey} className="pt-0 px-2 sm:px-3 lg:px-4 pb-2 sm:pb-3 lg:pb-4 max-w-full mx-auto animate-fadeIn bg-[#f8fafc] min-h-screen space-y-4">
-      <PortfolioIntelligenceBar stats={stats} label="PMO HUB" />
+    <div key={renderKey} className="pt-2 px-2 sm:px-3 lg:px-4 pb-2 sm:pb-3 lg:pb-4 max-w-full mx-auto animate-fadeIn bg-[#f8fafc] min-h-screen space-y-3">
+      {activeTab !== 'analytics' && <PortfolioIntelligenceBar stats={stats} label="PMO HUB" />}
       <ImportInspectionModal 
         isOpen={isImportInspectionOpen} 
         data={pendingImportData} 
@@ -3302,14 +3399,14 @@ const PMO: React.FC<PMOProps> = ({
         setFilters={setFilters} 
         dynamicOptions={dynamicOptions} 
         authorizedVerticals={['All', ...masterConfig.verticals]} 
-        actionButtons={
-          <div className="flex items-center gap-2">
-            <div className="flex items-center space-x-2 bg-slate-50 border border-slate-200 rounded-xl h-10 px-2 shadow-sm mr-2">
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest pl-2">Sort:</span>
+        actionButtons={activeTab === 'analytics' ? undefined : (
+          <div className="flex items-center gap-1.5">
+            <div className="flex items-center space-x-1.5 bg-slate-50 border border-slate-200 rounded-xl h-8 px-2 shadow-xs">
+              <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest pl-1">Sort:</span>
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as any)}
-                className="bg-transparent border-none text-[10px] font-black text-slate-700 uppercase focus:outline-none focus:ring-0 cursor-pointer"
+                className="bg-transparent border-none text-[9px] font-black text-slate-700 uppercase focus:outline-none focus:ring-0 cursor-pointer"
               >
                 <option value="default">Default</option>
                 <option value="manpower">Manpower (MM)</option>
@@ -3318,24 +3415,22 @@ const PMO: React.FC<PMOProps> = ({
               </select>
               <button
                 onClick={() => setSortOrder(sortOrder === 'desc' ? 'asc' : 'desc')}
-                className="p-1 hover:bg-slate-200 rounded-lg transition-colors text-slate-500"
+                className="p-0.5 hover:bg-slate-200 rounded-md transition-colors text-slate-500"
                 title={sortOrder === 'desc' ? 'Descending' : 'Ascending'}
               >
-                <svg className={`w-3.5 h-3.5 transform transition-transform ${sortOrder === 'asc' ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className={`w-3 h-3 transform transition-transform ${sortOrder === 'asc' ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7-7" />
                 </svg>
               </button>
             </div>
 
-            {/* 'New' button removed as projects are managed via Master Project List */}
-
             {mode === 'Actuals' && (
               <button 
                 onClick={() => { setImportType('raw'); fileInputRef.current?.click(); }}
-                className="h-10 px-4 bg-white border border-slate-200 rounded-xl text-[10px] font-black text-slate-500 uppercase hover:bg-slate-50 transition-all flex items-center justify-center space-x-2 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                className="h-8 px-3 bg-white border border-slate-200 rounded-xl text-[9px] font-black text-slate-600 uppercase hover:bg-slate-50 transition-all flex items-center justify-center space-x-1.5 shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={isProcessing || isLocked}
               >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M12 16V4m-4 4l4-4 4 4" strokeWidth="3"/></svg>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M12 16V4m-4 4l4-4 4 4" strokeWidth="3"/></svg>
                 <span>Import</span>
               </button>
             )}
@@ -3343,26 +3438,25 @@ const PMO: React.FC<PMOProps> = ({
             {isAdmin && (mode === 'Budget' || mode === 'Forecast') && (
               <button 
                 onClick={() => { setImportType('raw'); fileInputRef.current?.click(); }}
-                className="h-10 px-4 bg-white border border-slate-200 rounded-xl text-[10px] font-black text-slate-500 uppercase hover:bg-slate-50 transition-all flex items-center justify-center space-x-2 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                className="h-8 px-3 bg-white border border-slate-200 rounded-xl text-[9px] font-black text-slate-600 uppercase hover:bg-slate-50 transition-all flex items-center justify-center space-x-1.5 shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={isProcessing || isLocked || (() => {
                   const fyStrings = Array.isArray(selectedFYs) ? (selectedFYs as string[]) : [String(selectedFYs)];
                   const yearsToCheck = fyStrings.includes('All FY') ? ALL_FISCAL_YEARS.filter(y => y !== 'All FY') : fyStrings;
                   return masterConfig.isFiscalLocked || yearsToCheck.some(fy => !!masterConfig.fiscalLocks?.[`pmo_page_${fy}_Budget`] || !!masterConfig.fiscalLocks?.[`pmo_page_${fy}_master`]);
                 })()}
               >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M12 16V4m-4 4l4-4 4 4" strokeWidth="3"/></svg>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M12 16V4m-4 4l4-4 4 4" strokeWidth="3"/></svg>
                 <span>Import</span>
               </button>
             )}
             
-            {/* 'Import Processed' button removed as requested */}
             {isAdmin && mode === 'Actuals' && (processedProjects.results || []).length > 0 && (
               <button 
                 onClick={onDeleteAll}
                 disabled={isProcessing || isLocked}
-                className="h-10 px-4 bg-white border border-rose-200 rounded-xl text-[10px] font-black text-rose-500 uppercase hover:bg-rose-50 transition-all flex items-center justify-center space-x-2 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                className="h-8 px-3 bg-white border border-rose-200 rounded-xl text-[9px] font-black text-rose-500 uppercase hover:bg-rose-50 transition-all flex items-center justify-center space-x-1.5 shadow-xs disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
                 <span>Delete All</span>
               </button>
             )}
@@ -3376,12 +3470,12 @@ const PMO: React.FC<PMOProps> = ({
             <button 
               onClick={handleExport}
               disabled={isProcessing}
-              className="h-10 px-4 bg-white border border-slate-200 rounded-xl text-[10px] font-black text-slate-500 uppercase hover:bg-slate-50 transition-all flex items-center justify-center space-x-2 shadow-sm disabled:opacity-50">
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M12 4v12m-4-4l4 4 4-4" strokeWidth="3"/></svg>
+              className="h-8 px-3 bg-white border border-slate-200 rounded-xl text-[9px] font-black text-slate-600 uppercase hover:bg-slate-50 transition-all flex items-center justify-center space-x-1.5 shadow-xs disabled:opacity-50">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M12 4v12m-4-4l4 4 4-4" strokeWidth="3"/></svg>
               <span>Export</span>
             </button>
           </div>
-        }
+        )}
       />
 
       {isProcessing && processingProgress > 0 && (
@@ -3457,6 +3551,7 @@ const PMO: React.FC<PMOProps> = ({
           mode={mode}
           setMode={setMode}
           filters={filters}
+          totalsLookup={totalsLookup}
         />
       ) : (
         <div className="space-y-2">

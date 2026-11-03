@@ -742,6 +742,7 @@ export const App: React.FC = () => {
   const prevFiscalModeRef = useRef(fiscalMode);
   const prevProcessorSubTabRef = useRef(processorSubTab);
   const prevProcessorModeRef = useRef(processorMode);
+  const prevActiveTabRef = useRef(activeTab);
   const isDirtyRef = useRef(false);
   const firstDirtyTimeRef = useRef(0);
   const lastUpdatedRef = useRef(getInitialState('lastUpdated', 0));
@@ -883,29 +884,45 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (!currentUser || !syncConfig.url || !syncConfig.key) return;
     syncService.loadResources(syncConfig)
-      .then(emps => setEmployees(emps))
-      .catch(err => console.error("Global Resources Hydration Error:", err));
+      .then(emps => {
+        if (Array.isArray(emps) && emps.length > 0) {
+          setEmployees(emps);
+        }
+      })
+      .catch(err => console.warn("Global Resources Hydration Warning:", err));
 
     syncService.loadMasterProjects(syncConfig)
       .then(mprojs => {
         if (mprojs && mprojs.length > 0) {
           setMasterProjects(mprojs);
-          localStorage.setItem('masterProjects', JSON.stringify(mprojs));
+          try {
+            localStorage.setItem('masterProjects', JSON.stringify(mprojs));
+          } catch (e) {
+            console.warn("Could not cache masterProjects in localStorage:", e);
+          }
         }
       })
-      .catch(err => console.error("Global Master Projects Hydration Error:", err));
+      .catch(err => console.warn("Global Master Projects Hydration Warning:", err));
   }, [currentUser, syncConfig]);
 
   // Auto-sync missing active projects into masterProjects registry so Master Projects stays complete
   useEffect(() => {
     if (!projects || projects.length === 0) return;
-    const masterCodes = new Set((masterProjects || []).map(m => (m.code || '').trim().toUpperCase()));
+    const isGenericCode = (c: string) => !c || ['UMD-XXXX', 'XXXX', 'TBD', 'UMD-TBD', 'N/A', 'NA', 'TEMP'].includes(c);
+    const getMasterKey = (item: { code?: string; name?: string; id?: string }) => {
+      const c = (item.code || '').trim().toUpperCase();
+      if (!isGenericCode(c)) return `CODE:${c}`;
+      const n = (item.name || item.id || '').trim().toUpperCase();
+      return n ? `NAME:${n}` : '';
+    };
+
+    const masterKeys = new Set((masterProjects || []).map(getMasterKey).filter(Boolean));
     const missingMaster: MasterProject[] = [];
 
     projects.forEach(p => {
-      const code = (p.code || '').trim().toUpperCase();
-      if (code && !masterCodes.has(code)) {
-        masterCodes.add(code);
+      const key = getMasterKey(p);
+      if (key && !masterKeys.has(key)) {
+        masterKeys.add(key);
         missingMaster.push({
           id: p.id || p.code,
           code: p.code,
@@ -927,7 +944,11 @@ export const App: React.FC = () => {
     if (missingMaster.length > 0) {
       setMasterProjects(prev => {
         const next = [...prev, ...missingMaster];
-        localStorage.setItem('masterProjects', JSON.stringify(next));
+        try {
+          localStorage.setItem('masterProjects', JSON.stringify(next));
+        } catch (e) {
+          console.warn("Could not save masterProjects to localStorage:", e);
+        }
         if (syncConfig.url && syncConfig.key) {
           syncService.saveMasterProjects(syncConfig, next).catch(e => console.warn("Auto-sync master error:", e));
         }
@@ -1261,18 +1282,20 @@ export const App: React.FC = () => {
   }, [currentUser, notify]);
   
   useEffect(() => {
-    // Detect fiscal context change (Mode or FY array)
+    // Detect fiscal context change (Mode, FY array, or Tab context)
     const isModeChange = prevFiscalModeRef.current !== fiscalMode;
     const currentFYsStr = JSON.stringify(selectedFYs);
     const isFYChange = prevSelectedFYsRef.current !== currentFYsStr;
     const isSubTabChange = prevProcessorSubTabRef.current !== processorSubTab;
     const isProcModeChange = prevProcessorModeRef.current !== processorMode;
+    const isTabChange = prevActiveTabRef.current !== activeTab;
     
-    if (isModeChange || isFYChange || isSubTabChange || isProcModeChange) {
+    if (isModeChange || isFYChange || isSubTabChange || isProcModeChange || isTabChange) {
       prevFiscalModeRef.current = fiscalMode;
       prevSelectedFYsRef.current = currentFYsStr;
       prevProcessorSubTabRef.current = processorSubTab;
       prevProcessorModeRef.current = processorMode;
+      prevActiveTabRef.current = activeTab;
       
       const transitionContext = async () => {
         if (isDirtyRef.current) {
@@ -1280,7 +1303,6 @@ export const App: React.FC = () => {
         }
         isInitializedRef.current = false;
         isDirtyRef.current = false;
-        setProjects([]); // Clear projects to ensure isolation during re-hydration
         setSyncTrigger(t => t + 1); // trigger useEffect initialization if needed
       };
       
@@ -1430,12 +1452,32 @@ export const App: React.FC = () => {
           loadedAct = act;
           loadedFct = fct;
 
+          const getLocalProjectsForMode = (mVal: string): any[] => {
+            const fyArray = Array.isArray(queryY) ? queryY : [queryY];
+            const isAllFYLocal = fyArray.includes('All FY' as any);
+            const years = isAllFYLocal ? ALL_FISCAL_YEARS.filter(y => y !== 'All FY') : fyArray;
+            const projs: any[] = [];
+            years.forEach(y => {
+              const saved = localStorage.getItem(getStorageKey(y as FiscalYear, mVal as any));
+              if (saved) {
+                try {
+                  let parsedString = saved;
+                  if (!saved.startsWith('{') && !saved.startsWith('[')) {
+                    try { parsedString = LZString.decompressFromUTF16(saved) || saved; } catch (e) {}
+                  }
+                  const parsed = JSON.parse(parsedString);
+                  if (Array.isArray(parsed?.projects)) projs.push(...parsed.projects);
+                } catch (e) {}
+              }
+            });
+            return projs;
+          };
+
           if (bud || act || fct) {
-            // ... rest of the merge logic is fine ...
             cloudData = { ...(bud || act || fct) };
-            const actualsList = act?.projects || [];
-            const forecastList = fct?.projects || [];
-            const budgetList = bud?.projects || [];
+            const actualsList = (act?.projects && act.projects.length > 0) ? act.projects : getLocalProjectsForMode('Actuals');
+            const forecastList = (fct?.projects && fct.projects.length > 0) ? fct.projects : getLocalProjectsForMode('Forecast');
+            const budgetList = (bud?.projects && bud.projects.length > 0) ? bud.projects : getLocalProjectsForMode('Budget');
 
             const isGenericCode = (c: string | undefined | null) => {
               if (!c) return true;
@@ -1466,17 +1508,21 @@ export const App: React.FC = () => {
                 matchedKey = pId || (pCode ? `code_${pCode}` : `proj_${pName || ''}_${Math.random().toString(36).substr(2, 9)}`);
                 mergedProjectsMap[matchedKey] = {
                   ...p,
-                  pmoRows: mode === 'Budget' ? { ...(p.pmoRows || {}) } : {},
-                  rows: mode === 'Budget' ? { ...(p.rows || {}) } : {},
-                  skills: mode === 'Budget' ? { ...(p.skills || {}) } : {},
-                  expenses: mode === 'Budget' ? { ...(p.expenses || {}) } : {},
-                  employeeSkills: mode === 'Budget' ? { ...(p.employeeSkills || {}) } : {},
-                  actuals: mode === 'Actuals' ? { ...(p.actuals || {}) } : {},
-                  actualsEmployeeSkills: mode === 'Actuals' ? { ...(p.actualsEmployeeSkills || {}) } : {},
-                  actualsExpenseDetails: mode === 'Actuals' && p.actualsExpenseDetails ? { ...p.actualsExpenseDetails } : {},
-                  forecast: mode === 'Forecast' ? { ...(p.forecast || {}) } : {},
-                  forecastEmployeeSkills: mode === 'Forecast' ? { ...(p.forecastEmployeeSkills || {}) } : {},
-                  forecastExpenseDetails: mode === 'Forecast' && p.forecastExpenseDetails ? { ...p.forecastExpenseDetails } : {},
+                  pmoRows: mode === 'Budget' ? { ...(p.pmoRows || {}) } : { ...(p.pmoRows || {}) },
+                  rows: mode === 'Budget' ? { ...(p.rows || {}) } : { ...(p.rows || {}) },
+                  skills: mode === 'Budget' ? { ...(p.skills || {}) } : { ...(p.skills || {}) },
+                  pmoSkills: mode === 'Budget' ? { ...(p.pmoSkills || {}) } : { ...(p.pmoSkills || {}) },
+                  expenses: mode === 'Budget' ? { ...(p.expenses || {}) } : { ...(p.expenses || {}) },
+                  employeeSkills: mode === 'Budget' ? { ...(p.employeeSkills || {}) } : { ...(p.employeeSkills || {}) },
+                  pmoEmployeeSkills: mode === 'Budget' ? { ...(p.pmoEmployeeSkills || {}) } : { ...(p.pmoEmployeeSkills || {}) },
+                  actuals: mode === 'Actuals' ? { ...(p.actuals || {}) } : { ...(p.actuals || {}) },
+                  actualsSkills: mode === 'Actuals' ? { ...(p.actualsSkills || {}) } : { ...(p.actualsSkills || {}) },
+                  actualsEmployeeSkills: mode === 'Actuals' ? { ...(p.actualsEmployeeSkills || {}) } : { ...(p.actualsEmployeeSkills || {}) },
+                  actualsExpenseDetails: mode === 'Actuals' && p.actualsExpenseDetails ? { ...p.actualsExpenseDetails } : (p.actualsExpenseDetails ? { ...p.actualsExpenseDetails } : {}),
+                  forecast: mode === 'Forecast' ? { ...(p.forecast || {}) } : { ...(p.forecast || {}) },
+                  forecastSkills: mode === 'Forecast' ? { ...(p.forecastSkills || {}) } : { ...(p.forecastSkills || {}) },
+                  forecastEmployeeSkills: mode === 'Forecast' ? { ...(p.forecastEmployeeSkills || {}) } : { ...(p.forecastEmployeeSkills || {}) },
+                  forecastExpenseDetails: mode === 'Forecast' && p.forecastExpenseDetails ? { ...p.forecastExpenseDetails } : (p.forecastExpenseDetails ? { ...p.forecastExpenseDetails } : {}),
                 };
                 if (pId) codeToKeyMap[pId] = matchedKey;
                 if (pCode) codeToKeyMap[pCode] = matchedKey;
@@ -1487,17 +1533,21 @@ export const App: React.FC = () => {
                   if (p.pmoRows && Object.keys(p.pmoRows).length > 0) existing.pmoRows = { ...existing.pmoRows, ...p.pmoRows };
                   if (p.rows && Object.keys(p.rows).length > 0) existing.rows = { ...existing.rows, ...p.rows };
                   if (p.skills && Object.keys(p.skills).length > 0) existing.skills = { ...existing.skills, ...p.skills };
+                  if (p.pmoSkills && Object.keys(p.pmoSkills).length > 0) existing.pmoSkills = { ...(existing.pmoSkills || {}), ...p.pmoSkills };
                   if (p.expenses && Object.keys(p.expenses).length > 0) existing.expenses = { ...existing.expenses, ...p.expenses };
                   if (p.employeeSkills && Object.keys(p.employeeSkills).length > 0) existing.employeeSkills = { ...existing.employeeSkills, ...p.employeeSkills };
+                  if (p.pmoEmployeeSkills && Object.keys(p.pmoEmployeeSkills).length > 0) existing.pmoEmployeeSkills = { ...(existing.pmoEmployeeSkills || {}), ...p.pmoEmployeeSkills };
                   if (p.budgetFYs) existing.budgetFYs = Array.from(new Set([...(existing.budgetFYs || []), ...(p.budgetFYs || [])]));
                 } else if (mode === 'Actuals') {
-                  existing.actuals = { ...existing.actuals, ...(p.actuals || {}) };
-                  existing.actualsEmployeeSkills = { ...existing.actualsEmployeeSkills, ...(p.actualsEmployeeSkills || {}) };
+                  if (p.actuals && Object.keys(p.actuals).length > 0) existing.actuals = { ...existing.actuals, ...p.actuals };
+                  if (p.actualsSkills && Object.keys(p.actualsSkills).length > 0) existing.actualsSkills = { ...(existing.actualsSkills || {}), ...p.actualsSkills };
+                  if (p.actualsEmployeeSkills && Object.keys(p.actualsEmployeeSkills).length > 0) existing.actualsEmployeeSkills = { ...existing.actualsEmployeeSkills, ...p.actualsEmployeeSkills };
                   if (p.actualsExpenseDetails) existing.actualsExpenseDetails = { ...(existing.actualsExpenseDetails || {}), ...p.actualsExpenseDetails };
                   if (p.actualsFYs) existing.actualsFYs = Array.from(new Set([...(existing.actualsFYs || []), ...(p.actualsFYs || [])]));
                 } else if (mode === 'Forecast') {
-                  existing.forecast = { ...existing.forecast, ...(p.forecast || {}) };
-                  existing.forecastEmployeeSkills = { ...existing.forecastEmployeeSkills, ...(p.forecastEmployeeSkills || {}) };
+                  if (p.forecast && Object.keys(p.forecast).length > 0) existing.forecast = { ...existing.forecast, ...p.forecast };
+                  if (p.forecastSkills && Object.keys(p.forecastSkills).length > 0) existing.forecastSkills = { ...(existing.forecastSkills || {}), ...p.forecastSkills };
+                  if (p.forecastEmployeeSkills && Object.keys(p.forecastEmployeeSkills).length > 0) existing.forecastEmployeeSkills = { ...existing.forecastEmployeeSkills, ...p.forecastEmployeeSkills };
                   if (p.forecastExpenseDetails) existing.forecastExpenseDetails = { ...(existing.forecastExpenseDetails || {}), ...p.forecastExpenseDetails };
                   if (p.forecastFYs) existing.forecastFYs = Array.from(new Set([...(existing.forecastFYs || []), ...(p.forecastFYs || [])]));
                 }
@@ -1715,15 +1765,19 @@ export const App: React.FC = () => {
               matchedKey = pId || (pCode ? `code_${pCode}` : `proj_${pName || ''}_${Math.random().toString(36).substr(2, 9)}`);
               mergedProjectsMap[matchedKey] = { 
                 ...p,
-                pmoRows: currentMode === 'Budget' ? { ...(p.pmoRows || {}) } : {},
-                rows: currentMode === 'Budget' ? { ...(p.rows || {}) } : {},
-                skills: currentMode === 'Budget' ? { ...(p.skills || {}) } : {},
-                expenses: currentMode === 'Budget' ? { ...(p.expenses || {}) } : {},
-                employeeSkills: currentMode === 'Budget' ? { ...(p.employeeSkills || {}) } : {},
-                actuals: currentMode === 'Actuals' ? { ...(p.actuals || {}) } : {},
-                actualsEmployeeSkills: currentMode === 'Actuals' ? { ...(p.actualsEmployeeSkills || {}) } : {},
-                forecast: currentMode === 'Forecast' ? { ...(p.forecast || {}) } : {},
-                forecastEmployeeSkills: currentMode === 'Forecast' ? { ...(p.forecastEmployeeSkills || {}) } : {},
+                pmoRows: { ...(p.pmoRows || {}) },
+                rows: { ...(p.rows || {}) },
+                skills: { ...(p.skills || {}) },
+                pmoSkills: { ...(p.pmoSkills || {}) },
+                expenses: { ...(p.expenses || {}) },
+                employeeSkills: { ...(p.employeeSkills || {}) },
+                pmoEmployeeSkills: { ...(p.pmoEmployeeSkills || {}) },
+                actuals: { ...(p.actuals || {}) },
+                actualsSkills: { ...(p.actualsSkills || {}) },
+                actualsEmployeeSkills: { ...(p.actualsEmployeeSkills || {}) },
+                forecast: { ...(p.forecast || {}) },
+                forecastSkills: { ...(p.forecastSkills || {}) },
+                forecastEmployeeSkills: { ...(p.forecastEmployeeSkills || {}) },
               };
               if (pId) codeToKeyMap[pId] = matchedKey;
               if (pCode) codeToKeyMap[pCode] = matchedKey;
@@ -1738,13 +1792,17 @@ export const App: React.FC = () => {
                 existing.pmoRows = mergeData(existing.pmoRows, p.pmoRows);
                 existing.rows = mergeData(existing.rows, p.rows);
                 existing.skills = mergeData(existing.skills, p.skills);
+                existing.pmoSkills = mergeData(existing.pmoSkills, p.pmoSkills);
                 existing.expenses = mergeData(existing.expenses, p.expenses);
                 existing.employeeSkills = mergeEmployeeSkills(existing.employeeSkills, p.employeeSkills);
+                existing.pmoEmployeeSkills = mergeEmployeeSkills(existing.pmoEmployeeSkills, p.pmoEmployeeSkills);
               } else if (currentMode === 'Actuals') {
                 existing.actuals = mergeData(existing.actuals, p.actuals);
+                existing.actualsSkills = mergeData(existing.actualsSkills, p.actualsSkills);
                 existing.actualsEmployeeSkills = mergeEmployeeSkills(existing.actualsEmployeeSkills, p.actualsEmployeeSkills);
               } else if (currentMode === 'Forecast') {
                 existing.forecast = mergeData(existing.forecast, p.forecast);
+                existing.forecastSkills = mergeData(existing.forecastSkills, p.forecastSkills);
                 existing.forecastEmployeeSkills = mergeEmployeeSkills(existing.forecastEmployeeSkills, p.forecastEmployeeSkills);
               }
             }
@@ -1819,15 +1877,19 @@ export const App: React.FC = () => {
               matchedKey = pId || (pCode ? `code_${pCode}` : `proj_${pName || ''}_${Math.random().toString(36).substr(2, 9)}`);
               mergedProjectsMap[matchedKey] = { 
                 ...p,
-                pmoRows: mVal === 'Budget' ? { ...(p.pmoRows || {}) } : {},
-                rows: mVal === 'Budget' ? { ...(p.rows || {}) } : {},
-                skills: mVal === 'Budget' ? { ...(p.skills || {}) } : {},
-                expenses: mVal === 'Budget' ? { ...(p.expenses || {}) } : {},
-                employeeSkills: mVal === 'Budget' ? { ...(p.employeeSkills || {}) } : {},
-                actuals: mVal === 'Actuals' ? { ...(p.actuals || {}) } : {},
-                actualsEmployeeSkills: mVal === 'Actuals' ? { ...(p.actualsEmployeeSkills || {}) } : {},
-                forecast: mVal === 'Forecast' ? { ...(p.forecast || {}) } : {},
-                forecastEmployeeSkills: mVal === 'Forecast' ? { ...(p.forecastEmployeeSkills || {}) } : {},
+                pmoRows: { ...(p.pmoRows || {}) },
+                rows: { ...(p.rows || {}) },
+                skills: { ...(p.skills || {}) },
+                pmoSkills: { ...(p.pmoSkills || {}) },
+                expenses: { ...(p.expenses || {}) },
+                employeeSkills: { ...(p.employeeSkills || {}) },
+                pmoEmployeeSkills: { ...(p.pmoEmployeeSkills || {}) },
+                actuals: { ...(p.actuals || {}) },
+                actualsSkills: { ...(p.actualsSkills || {}) },
+                actualsEmployeeSkills: { ...(p.actualsEmployeeSkills || {}) },
+                forecast: { ...(p.forecast || {}) },
+                forecastSkills: { ...(p.forecastSkills || {}) },
+                forecastEmployeeSkills: { ...(p.forecastEmployeeSkills || {}) },
               };
               if (pId) codeToKeyMap[pId] = matchedKey;
               if (pCode) codeToKeyMap[pCode] = matchedKey;
@@ -1838,13 +1900,17 @@ export const App: React.FC = () => {
                 if (p.pmoRows && Object.keys(p.pmoRows).length > 0) existing.pmoRows = p.pmoRows;
                 if (p.rows && Object.keys(p.rows).length > 0) existing.rows = p.rows;
                 if (p.skills && Object.keys(p.skills).length > 0) existing.skills = p.skills;
+                if (p.pmoSkills && Object.keys(p.pmoSkills).length > 0) existing.pmoSkills = p.pmoSkills;
                 if (p.expenses && Object.keys(p.expenses).length > 0) existing.expenses = p.expenses;
                 if (p.employeeSkills && Object.keys(p.employeeSkills).length > 0) existing.employeeSkills = p.employeeSkills;
+                if (p.pmoEmployeeSkills && Object.keys(p.pmoEmployeeSkills).length > 0) existing.pmoEmployeeSkills = p.pmoEmployeeSkills;
               } else if (mVal === 'Actuals') {
                 if (p.actuals && Object.keys(p.actuals).length > 0) existing.actuals = p.actuals;
+                if (p.actualsSkills && Object.keys(p.actualsSkills).length > 0) existing.actualsSkills = p.actualsSkills;
                 if (p.actualsEmployeeSkills && Object.keys(p.actualsEmployeeSkills).length > 0) existing.actualsEmployeeSkills = p.actualsEmployeeSkills;
               } else if (mVal === 'Forecast') {
                 if (p.forecast && Object.keys(p.forecast).length > 0) existing.forecast = p.forecast;
+                if (p.forecastSkills && Object.keys(p.forecastSkills).length > 0) existing.forecastSkills = p.forecastSkills;
                 if (p.forecastEmployeeSkills && Object.keys(p.forecastEmployeeSkills).length > 0) existing.forecastEmployeeSkills = p.forecastEmployeeSkills;
               }
             }
@@ -2622,16 +2688,77 @@ export const App: React.FC = () => {
       const off = p.timelineOffset || 0; 
       
       const calc = (sourceKey: 'rows' | 'actuals' | 'forecast') => {
-        let directMM = 0, contractedMM = 0, exp = 0, contractedExp = 0; 
-        const rawSource = sourceKey === 'rows' 
-          ? (p.rows && Object.keys(p.rows).length > 0 ? p.rows : {})
-          : p[sourceKey];
-        const hasData = rawSource && Object.keys(rawSource).length > 0;
-        const dataSource = hasData 
-          ? rawSource 
-          : (sourceKey === 'rows' 
-              ? { ...(p.rows || {}), ...(p.skills || {}), ...(p.expenses || {}) } 
-              : {});
+        let directMM = 0, contractedMM = 0, exp = 0, contractedExp = 0;
+        let dataSource: Record<string, any> = {};
+
+        if (sourceKey === 'rows') {
+          const hasRows = p.rows && Object.keys(p.rows).length > 0;
+          const hasPmoRows = p.pmoRows && Object.keys(p.pmoRows).length > 0;
+          if (hasRows) {
+            dataSource = { ...p.rows };
+          } else if (hasPmoRows) {
+            dataSource = { ...p.pmoRows };
+          } else {
+            dataSource = {
+              ...(p.skills || {}),
+              ...(p.pmoSkills || {}),
+              ...(p.expenses || {})
+            };
+          }
+          // Merge employee skills fallback if category missing in dataSource
+          const empSkills = (p as any).pmoEmployeeSkills || p.employeeSkills;
+          if (empSkills && typeof empSkills === 'object') {
+            Object.entries(empSkills).forEach(([skill, emps]: [string, any]) => {
+              if (!dataSource[skill] && emps && typeof emps === 'object') {
+                const sumArr = new Array(MAX_MONTHS).fill(0);
+                Object.values(emps).forEach((allocs: any) => {
+                  if (Array.isArray(allocs)) {
+                    allocs.forEach((v, idx) => { if (idx < MAX_MONTHS) sumArr[idx] += (Number(v) || 0); });
+                  }
+                });
+                if (sumArr.some(v => v !== 0)) dataSource[skill] = sumArr;
+              }
+            });
+          }
+        } else if (sourceKey === 'actuals') {
+          dataSource = {
+            ...((p as any).actualsSkills || {}),
+            ...(p.actuals || {})
+          };
+          const empSkills = (p as any).actualsEmployeeSkills;
+          if (empSkills && typeof empSkills === 'object') {
+            Object.entries(empSkills).forEach(([skill, emps]: [string, any]) => {
+              if (!dataSource[skill] && emps && typeof emps === 'object') {
+                const sumArr = new Array(MAX_MONTHS).fill(0);
+                Object.values(emps).forEach((allocs: any) => {
+                  if (Array.isArray(allocs)) {
+                    allocs.forEach((v, idx) => { if (idx < MAX_MONTHS) sumArr[idx] += (Number(v) || 0); });
+                  }
+                });
+                if (sumArr.some(v => v !== 0)) dataSource[skill] = sumArr;
+              }
+            });
+          }
+        } else {
+          dataSource = {
+            ...((p as any).forecastSkills || {}),
+            ...(p.forecast || {})
+          };
+          const empSkills = (p as any).forecastEmployeeSkills;
+          if (empSkills && typeof empSkills === 'object') {
+            Object.entries(empSkills).forEach(([skill, emps]: [string, any]) => {
+              if (!dataSource[skill] && emps && typeof emps === 'object') {
+                const sumArr = new Array(MAX_MONTHS).fill(0);
+                Object.values(emps).forEach((allocs: any) => {
+                  if (Array.isArray(allocs)) {
+                    allocs.forEach((v, idx) => { if (idx < MAX_MONTHS) sumArr[idx] += (Number(v) || 0); });
+                  }
+                });
+                if (sumArr.some(v => v !== 0)) dataSource[skill] = sumArr;
+              }
+            });
+          }
+        }
         
         // Use the range calculated above for the target period
         const targetRange = isAllFY ? MAX_MONTHS : range;
@@ -2725,14 +2852,18 @@ export const App: React.FC = () => {
         }; 
       };
 
-      map[p.id] = { 
+      const entry = { 
         budget: calc('rows'),
         actuals: calc('actuals'),
         forecast: calc('forecast')
       };
+      map[p.id] = entry;
+      if (p.code) {
+        map[p.code] = entry;
+      }
     }); 
     return map; 
-  }, [projects, currentFYFinancials, selectedFYs, fiscalMode]);
+  }, [projects, currentFYFinancials, selectedFYs, fiscalMode, masterConfig]);
 
   const calculateUnifiedSummary = useCallback((filterSet: any, mode: FiscalMode) => {
     const searchStr = filterSet.search.toLowerCase().trim();
@@ -3127,6 +3258,7 @@ export const App: React.FC = () => {
             isAdmin={isAdmin}
             setDeletionTarget={setDeletionTarget}
             lastUpdated={lastUpdated}
+            totalsLookup={totalsLookup}
           />
         );
       case AppTab.PMO_ANALYTICS:
@@ -3155,6 +3287,7 @@ export const App: React.FC = () => {
             isAdmin={isAdmin}
             setDeletionTarget={setDeletionTarget}
             lastUpdated={lastUpdated}
+            totalsLookup={totalsLookup}
           />
         );
       case AppTab.ENTRY:

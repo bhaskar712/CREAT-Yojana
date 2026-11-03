@@ -1330,6 +1330,7 @@ export const exportProjectRegistry = async (
   filters?: any,
   isExplicitSingleProjectExport = false,
 ) => {
+  console.log("exportProjectRegistry: projectsInScope.length =", projectsInScope.length);
   const fy = selectedFY || "FY 25-26";
   const storageCache: Record<string, ProjectData[]> = {};
   const getProjectsWithCache = async (targetFY: string, mode: string): Promise<ProjectData[]> => {
@@ -1455,6 +1456,10 @@ export const exportProjectRegistry = async (
 
     let allRegistryProjects = Object.values(mergedProjectsMap);
 
+    // Filter to only include projects that were passed in the UI scope
+    const passedInIds = new Set(projectsInScope.map(p => p.id));
+    allRegistryProjects = allRegistryProjects.filter(p => passedInIds.has(p.id));
+
     // Apply UI filters to the union
     allRegistryProjects = allRegistryProjects.filter((p: any) => {
       const searchStr = (filters.search || '').toLowerCase().trim();
@@ -1463,10 +1468,11 @@ export const exportProjectRegistry = async (
       if (filters.vertical && !filters.vertical.includes('All') && !filters.vertical.includes(p.vertical)) return false;
       if (filters.domain && !filters.domain.includes('All') && !filters.domain.includes(p.buDomain)) return false;
       if (filters.bu && !filters.bu.includes('All') && !filters.bu.includes(p.businessUnit)) return false;
+      if (filters.customer && !(filters.customer || []).includes('All') && !(filters.customer || []).includes(p.customer)) return false;
       if (filters.projectType && !filters.projectType.includes('All') && !filters.projectType.includes(p.projectType)) return false;
       if (filters.family && !filters.family.includes('All') && !filters.family.includes(p.productFamily)) return false;
       if (filters.category && !filters.category.includes('All') && !filters.category.includes(p.category)) return false;
-      if (filters.tbc && !filters.tbc.includes('All') && !filters.tbc.includes(p.tbc)) return false;
+      if (filters.tbc && !filters.tbc.includes('All') && !filters.tbc.map((v: any) => v.toString().toUpperCase()).includes(((p.tbc || 'Yes') as string).toUpperCase())) return false;
       if (filters.pdh && !filters.pdh.includes('All') && !filters.pdh.includes(p.pdh)) return false;
       if (filters.generation && !filters.generation.includes('All') && !filters.generation.includes(p.generation || 'Current')) return false;
       return true;
@@ -1526,54 +1532,30 @@ export const exportProjectRegistry = async (
     }
 
     const mergePropValue = (propKey: keyof ProjectData, budgetVal: any, activeVal: any) => {
-      const bObj = (budgetVal && typeof budgetVal === 'object') ? budgetVal : {};
-      const aObj = (activeVal && typeof activeVal === 'object') ? activeVal : {};
-      
-      const merged = { ...bObj };
-      Object.entries(aObj).forEach(([cat, months]: [string, any]) => {
-        const hasActiveData = Array.isArray(months) 
-          ? months.some(v => v !== 0) 
-          : (months && typeof months === 'object' ? Object.values(months).some(v => Number(v) !== 0) : false);
-
-        if (hasActiveData) {
-          merged[cat] = months;
-        } else if (!merged[cat]) {
-          merged[cat] = months;
-        }
-      });
-      (enriched as any)[propKey] = merged;
+      // If activeVal is explicitly defined (even as an empty object {}), honor the active UI state
+      if (activeVal !== undefined && activeVal !== null) {
+        (enriched as any)[propKey] = activeVal;
+      } else if (budgetVal !== undefined && budgetVal !== null) {
+        (enriched as any)[propKey] = budgetVal;
+      } else {
+        (enriched as any)[propKey] = {};
+      }
     };
 
     const mergeNestedAllocs = (budgetNest: any, activeNest: any) => {
-      const bNest = (budgetNest && typeof budgetNest === 'object') ? budgetNest : {};
-      const aNest = (activeNest && typeof activeNest === 'object') ? activeNest : {};
-      const merged = { ...bNest };
-      
-      Object.entries(aNest).forEach(([skill, allocsByEmail]: [string, any]) => {
-        if (!merged[skill]) {
-          merged[skill] = allocsByEmail;
-        } else {
-          merged[skill] = { ...merged[skill] };
-          Object.entries(allocsByEmail || {}).forEach(([email, monthlyArr]: [string, any]) => {
-            const hasActiveData = Array.isArray(monthlyArr) 
-              ? monthlyArr.some(v => v !== 0) 
-              : (monthlyArr && typeof monthlyArr === 'object' ? Object.values(monthlyArr).some(v => Number(v) !== 0) : false);
-
-            if (hasActiveData) {
-              merged[skill][email] = monthlyArr;
-            }
-          });
-        }
-      });
-      return merged;
+      if (activeNest !== undefined && activeNest !== null) return activeNest;
+      if (budgetNest !== undefined && budgetNest !== null) return budgetNest;
+      return {};
     };
 
-    // Budget data enrichment
+    // Budget data enrichment: active UI data in p takes precedence; storage is only a fallback for undefined properties
     mergePropValue('pmoRows', budgetProj?.pmoRows, p.pmoRows);
     mergePropValue('rows', budgetProj?.rows, p.rows);
     mergePropValue('skills', budgetProj?.skills, p.skills);
     mergePropValue('expenses', budgetProj?.expenses, p.expenses);
+    mergePropValue('pmoSkills', budgetProj?.pmoSkills, p.pmoSkills);
     enriched.employeeSkills = mergeNestedAllocs(budgetProj?.employeeSkills, p.employeeSkills);
+    enriched.pmoEmployeeSkills = mergeNestedAllocs(budgetProj?.pmoEmployeeSkills, p.pmoEmployeeSkills);
 
     // Forecast data enrichment
     mergePropValue('forecast', forecastProj?.forecast, p.forecast);
@@ -1845,39 +1827,61 @@ export const exportProjectRegistry = async (
         return row;
       };
 
+      // Determine authoritative data source for this project & sheet
+      let projSource: Record<string, any> = {};
+      if (dataKey === 'actuals') {
+        projSource = p.actuals || {};
+      } else if (dataKey === 'forecast') {
+        projSource = p.forecast || {};
+      } else if (dataKey === 'pmoRows') {
+        if (p.pmoRows && Object.keys(p.pmoRows).length > 0) {
+          projSource = p.pmoRows;
+        } else if (p.rows && Object.keys(p.rows).length > 0) {
+          projSource = p.rows;
+        } else {
+          projSource = { ...(p.skills || {}), ...(p.expenses || {}) };
+        }
+      } else { // 'rows' (Budget)
+        if (p.rows !== undefined && p.rows !== null && typeof p.rows === 'object') {
+          projSource = p.rows;
+        } else if (p.pmoRows && Object.keys(p.pmoRows).length > 0) {
+          projSource = p.pmoRows;
+        } else {
+          projSource = { ...(p.skills || {}), ...(p.expenses || {}) };
+        }
+      }
+      const hasProjSource = projSource && Object.keys(projSource).length > 0;
+
       const directManpowerCategories = MANPOWER_CATEGORIES.filter(cat => cat !== 'Contracted Employee');
       const directManpowerRowNumbers: number[] = [];
 
       directManpowerCategories.forEach((cat) => {
         let fullRow: number[] | undefined;
-        const primaryData = (p as any)[dataKey]?.[cat];
+        const primaryData = projSource[cat];
         const parsedPrimary = parseAllocsLine(primaryData);
         if (parsedPrimary.some((v) => v !== 0)) {
           fullRow = parsedPrimary;
-        } else if (dataKey === 'pmoRows') {
-          fullRow = parseAllocsLine((p.pmoRows as any)?.[cat]);
-        } else if (dataKey === 'rows') {
-          fullRow = parseAllocsLine((p.rows as any)?.[cat] || (p.skills as any)?.[cat] || (p.expenses as any)?.[cat]);
-        } else if (dataKey === 'forecast') {
-          if (p.forecastEmployeeSkills && p.forecastEmployeeSkills[cat]) {
-            const sumRow = Array(MAX_MONTHS).fill(0);
-            Object.values(p.forecastEmployeeSkills[cat]).forEach((allocs: any) => {
-              const parsed = parseAllocsLine(allocs);
-              parsed.forEach((val, i) => { sumRow[i] += val; });
-            });
-            if (sumRow.some(v => v !== 0)) fullRow = sumRow;
-          }
-        } else if (dataKey === 'actuals') {
-          if (p.actualsEmployeeSkills && p.actualsEmployeeSkills[cat]) {
-            const sumRow = Array(MAX_MONTHS).fill(0);
-            Object.values(p.actualsEmployeeSkills[cat]).forEach((allocs: any) => {
-              const parsed = parseAllocsLine(allocs);
-              parsed.forEach((val, i) => { sumRow[i] += val; });
-            });
-            if (sumRow.some(v => v !== 0)) fullRow = sumRow;
-          }
-        } else {
-          fullRow = Array(MAX_MONTHS).fill(0);
+        } else if (dataKey === 'forecast' && p.forecastEmployeeSkills?.[cat]) {
+          const sumRow = Array(MAX_MONTHS).fill(0);
+          Object.values(p.forecastEmployeeSkills[cat]).forEach((allocs: any) => {
+            const parsed = parseAllocsLine(allocs);
+            parsed.forEach((val, i) => { sumRow[i] += val; });
+          });
+          if (sumRow.some(v => v !== 0)) fullRow = sumRow;
+        } else if (dataKey === 'actuals' && p.actualsEmployeeSkills?.[cat]) {
+          const sumRow = Array(MAX_MONTHS).fill(0);
+          Object.values(p.actualsEmployeeSkills[cat]).forEach((allocs: any) => {
+            const parsed = parseAllocsLine(allocs);
+            parsed.forEach((val, i) => { sumRow[i] += val; });
+          });
+          if (sumRow.some(v => v !== 0)) fullRow = sumRow;
+        } else if (!hasProjSource && (dataKey === 'rows' || dataKey === 'pmoRows') && p.employeeSkills?.[cat]) {
+          const sumRow = Array(MAX_MONTHS).fill(0);
+          Object.values(p.employeeSkills[cat]).forEach((allocs: any) => {
+            const parsed = parseAllocsLine(allocs);
+            parsed.forEach((val, i) => { sumRow[i] += val; });
+          });
+          if (sumRow.some(v => v !== 0)) fullRow = sumRow;
         }
         
         fullRow = fullRow || Array(MAX_MONTHS).fill(0);
@@ -1899,32 +1903,31 @@ export const exportProjectRegistry = async (
 
       // Contracted Employee MM row
       let contractedFullRow: number[] | undefined;
-      const primaryCe = (p as any)[dataKey]?.["Contracted Employee"];
+      const primaryCe = projSource["Contracted Employee"];
       const parsedCe = parseAllocsLine(primaryCe);
       if (parsedCe.some((v) => v !== 0)) {
         contractedFullRow = parsedCe;
-      } else if (dataKey === 'pmoRows') {
-        contractedFullRow = parseAllocsLine((p.pmoRows as any)?.["Contracted Employee"]);
-      } else if (dataKey === 'rows') {
-        contractedFullRow = parseAllocsLine((p.rows as any)?.["Contracted Employee"] || (p.skills as any)?.["Contracted Employee"]);
-      } else if (dataKey === 'forecast') {
-        if (p.forecastEmployeeSkills && p.forecastEmployeeSkills["Contracted Employee"]) {
-          const sumRow = Array(MAX_MONTHS).fill(0);
-          Object.values(p.forecastEmployeeSkills["Contracted Employee"]).forEach((allocs: any) => {
-            const parsed = parseAllocsLine(allocs);
-            parsed.forEach((val, i) => { sumRow[i] += val; });
-          });
-          if (sumRow.some(v => v !== 0)) contractedFullRow = sumRow;
-        }
-      } else if (dataKey === 'actuals') {
-        if (p.actualsEmployeeSkills && p.actualsEmployeeSkills["Contracted Employee"]) {
-          const sumRow = Array(MAX_MONTHS).fill(0);
-          Object.values(p.actualsEmployeeSkills["Contracted Employee"]).forEach((allocs: any) => {
-            const parsed = parseAllocsLine(allocs);
-            parsed.forEach((val, i) => { sumRow[i] += val; });
-          });
-          if (sumRow.some(v => v !== 0)) contractedFullRow = sumRow;
-        }
+      } else if (dataKey === 'forecast' && p.forecastEmployeeSkills?.["Contracted Employee"]) {
+        const sumRow = Array(MAX_MONTHS).fill(0);
+        Object.values(p.forecastEmployeeSkills["Contracted Employee"]).forEach((allocs: any) => {
+          const parsed = parseAllocsLine(allocs);
+          parsed.forEach((val, i) => { sumRow[i] += val; });
+        });
+        if (sumRow.some(v => v !== 0)) contractedFullRow = sumRow;
+      } else if (dataKey === 'actuals' && p.actualsEmployeeSkills?.["Contracted Employee"]) {
+        const sumRow = Array(MAX_MONTHS).fill(0);
+        Object.values(p.actualsEmployeeSkills["Contracted Employee"]).forEach((allocs: any) => {
+          const parsed = parseAllocsLine(allocs);
+          parsed.forEach((val, i) => { sumRow[i] += val; });
+        });
+        if (sumRow.some(v => v !== 0)) contractedFullRow = sumRow;
+      } else if (!hasProjSource && (dataKey === 'rows' || dataKey === 'pmoRows') && p.employeeSkills?.["Contracted Employee"]) {
+        const sumRow = Array(MAX_MONTHS).fill(0);
+        Object.values(p.employeeSkills["Contracted Employee"]).forEach((allocs: any) => {
+          const parsed = parseAllocsLine(allocs);
+          parsed.forEach((val, i) => { sumRow[i] += val; });
+        });
+        if (sumRow.some(v => v !== 0)) contractedFullRow = sumRow;
       }
       contractedFullRow = contractedFullRow || Array(MAX_MONTHS).fill(0);
       const contractedVisible = currentMonths.map((m) => {
@@ -1995,34 +1998,27 @@ export const exportProjectRegistry = async (
 
       operationalExpenseCategories.forEach((cat) => {
         let fullRow: number[] | undefined;
-        const primaryData = (p as any)[dataKey]?.[cat];
+        let primaryData = projSource[cat];
+        if (!primaryData && cat === 'Consultant') {
+          primaryData = projSource['Consultancy'];
+        }
         const parsedPrimary = parseAllocsLine(primaryData);
         if (parsedPrimary.some((v) => v !== 0)) {
           fullRow = parsedPrimary;
-        } else if (dataKey === 'pmoRows') {
-          fullRow = parseAllocsLine((p.pmoRows as any)?.[cat]);
-        } else if (dataKey === 'rows') {
-          fullRow = parseAllocsLine((p.rows as any)?.[cat] || (p.skills as any)?.[cat] || (p.expenses as any)?.[cat] || (cat === 'Consultant' ? (p.rows as any)?.['Consultancy'] || (p.expenses as any)?.['Consultancy'] : undefined));
-        } else if (dataKey === 'forecast') {
-          if (p.forecastEmployeeSkills && p.forecastEmployeeSkills[cat]) {
-            const sumRow = Array(MAX_MONTHS).fill(0);
-            Object.values(p.forecastEmployeeSkills[cat]).forEach((allocs: any) => {
-              const parsed = parseAllocsLine(allocs);
-              parsed.forEach((val, i) => { sumRow[i] += val; });
-            });
-            if (sumRow.some(v => v !== 0)) fullRow = sumRow;
-          }
-        } else if (dataKey === 'actuals') {
-          if (p.actualsEmployeeSkills && p.actualsEmployeeSkills[cat]) {
-            const sumRow = Array(MAX_MONTHS).fill(0);
-            Object.values(p.actualsEmployeeSkills[cat]).forEach((allocs: any) => {
-              const parsed = parseAllocsLine(allocs);
-              parsed.forEach((val, i) => { sumRow[i] += val; });
-            });
-            if (sumRow.some(v => v !== 0)) fullRow = sumRow;
-          }
-        } else {
-          fullRow = Array(MAX_MONTHS).fill(0);
+        } else if (dataKey === 'forecast' && p.forecastEmployeeSkills?.[cat]) {
+          const sumRow = Array(MAX_MONTHS).fill(0);
+          Object.values(p.forecastEmployeeSkills[cat]).forEach((allocs: any) => {
+            const parsed = parseAllocsLine(allocs);
+            parsed.forEach((val, i) => { sumRow[i] += val; });
+          });
+          if (sumRow.some(v => v !== 0)) fullRow = sumRow;
+        } else if (dataKey === 'actuals' && p.actualsEmployeeSkills?.[cat]) {
+          const sumRow = Array(MAX_MONTHS).fill(0);
+          Object.values(p.actualsEmployeeSkills[cat]).forEach((allocs: any) => {
+            const parsed = parseAllocsLine(allocs);
+            parsed.forEach((val, i) => { sumRow[i] += val; });
+          });
+          if (sumRow.some(v => v !== 0)) fullRow = sumRow;
         }
 
         fullRow = fullRow || Array(MAX_MONTHS).fill(0);
@@ -2030,7 +2026,7 @@ export const exportProjectRegistry = async (
           const absIdx = getAbsoluteMonthIndex(m);
           const i = absIdx - off;
           const val = i >= 0 && i < MAX_MONTHS ? fullRow[i] : 0;
-          return Math.abs(val) > 100 ? val / 10000000 : val;
+          return val / 10000000;
         });
         const r = createRow(cat, visible, false, false);
         expenseRowNumbers.push(r.number);
@@ -2182,12 +2178,16 @@ export const exportProjectRegistry = async (
 
       // Mode-isolated fallbacks: only check fallbacks relevant to the selected mode
       if (mode === 'Budget') {
-        const fallbackSources = isPMOContext ? [p.pmoRows] : [p.rows, p.expenses, p.skills];
-        for (const src of fallbackSources) {
-          const row = findInObj(src, cat);
-          if (row) {
-            const normalized = normalizeRow(row);
-            if (hasNonZero(normalized)) return normalized;
+        const hasRows = p.rows && Object.keys(p.rows).length > 0;
+        const hasPmo = p.pmoRows && Object.keys(p.pmoRows).length > 0;
+        if (!hasRows && !hasPmo) {
+          const fallbackSources = [p.expenses, p.skills];
+          for (const src of fallbackSources) {
+            const row = findInObj(src, cat);
+            if (row) {
+              const normalized = normalizeRow(row);
+              if (hasNonZero(normalized)) return normalized;
+            }
           }
         }
       } else if (mode === 'Actuals') {
@@ -2229,16 +2229,21 @@ export const exportProjectRegistry = async (
           ...(p.forecastEmployeeSkills || {})
         };
       } else {
-        dataToProcess = isPMOContext ? {
-          ...(p.pmoRows || {}),
-          ...(p.pmoSkills || {}),
-          ...(p.pmoEmployeeSkills || p.employeeSkills || {})
-        } : {
-          ...(p.rows || {}),
-          ...(p.skills || {}),
-          ...(p.expenses || {}),
-          ...(p.employeeSkills || {})
-        };
+        const hasRows = p.rows && Object.keys(p.rows).length > 0;
+        const hasPmo = p.pmoRows && Object.keys(p.pmoRows).length > 0;
+        if (isPMOContext) {
+          dataToProcess = hasPmo ? (p.pmoRows || {}) : (hasRows ? (p.rows || {}) : {
+            ...(p.skills || {}),
+            ...(p.expenses || {}),
+            ...(p.pmoSkills || {}),
+            ...(p.pmoEmployeeSkills || p.employeeSkills || {})
+          });
+        } else {
+          dataToProcess = hasRows ? (p.rows || {}) : (hasPmo ? (p.pmoRows || {}) : {
+            ...(p.skills || {}),
+            ...(p.expenses || {})
+          });
+        }
       }
       
       const norm = (s: string) => (s || '').trim().toLowerCase();
@@ -2407,7 +2412,7 @@ export const exportProjectRegistry = async (
           
           if (!expenseData[cat]) expenseData[cat] = new Array(monthsCount).fill(0);
           monthsArray.forEach((val: number, i: number) => {
-            const valCr = Math.abs(val) > 1000 ? val / 10000000 : val;
+            const valCr = val / 10000000;
             const vCr = (typeof valCr === 'number' && !isNaN(valCr)) ? valCr : 0;
 
             if (!holidayLeave || isContractedExp) {
@@ -3469,6 +3474,7 @@ export const processExcelImport = async (
             month: -1,
             hours: -1,
             amount: -1,
+            expenseAmount: -1,
             bucket: -1,
             type: -1,
             skill: -1,
@@ -3545,12 +3551,17 @@ export const processExcelImport = async (
                 colIndices.hours === -1
               )
                 colIndices.hours = idx;
-              if (
+              if (s === "expense amount" || s.includes("expense amount")) {
+                colIndices.expenseAmount = idx;
+                if (!colIndices.amountFound || colIndices.amount === -1) {
+                  colIndices.amount = idx;
+                  colIndices.amountFound = true;
+                }
+              } else if (
                 s === "amount" ||
                 s === "value" ||
                 s === "cost" ||
                 s === "total" ||
-                s.includes("expense amount") ||
                 s.includes("total expense") ||
                 s === "actuals" ||
                 s.includes("total cost") ||
@@ -3558,10 +3569,12 @@ export const processExcelImport = async (
                 s.includes("manpower cost")
               ) {
                 if (
-                  s.includes("total expense") ||
-                  s.includes("total cost") ||
-                  s.includes("net cost") ||
-                  !colIndices.amountFound
+                  colIndices.expenseAmount === -1 && (
+                    s.includes("total expense") ||
+                    s.includes("total cost") ||
+                    s.includes("net cost") ||
+                    !colIndices.amountFound
+                  )
                 ) {
                   colIndices.amount = idx;
                   colIndices.amountFound = true;
@@ -3668,7 +3681,8 @@ export const processExcelImport = async (
               if (colIndices.name === -1) colIndices.name = 1;
               if (colIndices.month === -1) colIndices.month = 6;
               if (colIndices.hours === -1) colIndices.hours = 11; // Column L
-              if (colIndices.amount === -1) colIndices.amount = 25; // Column Z
+              if (colIndices.expenseAmount === -1) colIndices.expenseAmount = 23; // Column X (Expense Amount)
+              if (colIndices.amount === -1) colIndices.amount = colIndices.expenseAmount !== -1 ? colIndices.expenseAmount : 23;
               if (colIndices.bucket === -1) colIndices.bucket = 21; // Column V
               if (colIndices.type === -1) colIndices.type = 22; // Column W
               if (colIndices.skill === -1) colIndices.skill = 32; // Column AG
@@ -3930,9 +3944,13 @@ export const processExcelImport = async (
                     bucket = "Material";
                   else if (
                     normalizedSource.includes("consultant") ||
-                    normalizedSource.includes("consultancy") ||
+                    normalizedSource.includes("consultancy")
+                  )
+                    bucket = "Consultant";
+                  else if (
                     normalizedSource.includes("outsourcing") ||
-                    normalizedSource === "contracted employee"
+                    normalizedSource === "contracted employee" ||
+                    normalizedSource === "contracted employee expense"
                   )
                     bucket = "Contracted Employee";
                   else if (normalizedSource.includes("hr")) bucket = "HR";
@@ -4313,7 +4331,8 @@ export const processExcelImport = async (
 
             const pCode = (row?.[codeCol] || row?.B || "").toString().trim();
             if (!pCode) return acc;
-            // seenCodes.add(pCode.toUpperCase()); // Removed strict duplicate check
+            if (seenCodes.has(pCode.toUpperCase())) return acc;
+            seenCodes.add(pCode.toUpperCase());
 
             const uuid = systemIdCol
               ? (row?.[systemIdCol] || "").toString().trim()
@@ -4710,9 +4729,13 @@ export const processExcelImport = async (
                         eCat = "Material";
                       else if (
                         normalizedLabel.includes("consultant") ||
-                        normalizedLabel.includes("consultancy") ||
+                        normalizedLabel.includes("consultancy")
+                      )
+                        eCat = "Consultant";
+                      else if (
                         normalizedLabel.includes("outsourcing") ||
-                        normalizedLabel === "contracted employee"
+                        normalizedLabel === "contracted employee" ||
+                        normalizedLabel === "contracted employee expense"
                       )
                         eCat = "Contracted Employee";
                       else if (normalizedLabel.includes("hr")) eCat = "HR";

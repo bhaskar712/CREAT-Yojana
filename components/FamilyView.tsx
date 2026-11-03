@@ -1,16 +1,48 @@
 import React, { useMemo, useState } from 'react';
-import { Project } from '../types';
-import { ArrowLeftRight, Layers } from 'lucide-react';
+import { Project, FiscalMode, Opportunity } from '../types';
+import { ArrowLeftRight, Layers, FolderTree, Grid3X3, ScatterChart as ScatterIcon, Award } from 'lucide-react';
 import { ScatterChart, Scatter, XAxis, YAxis, ZAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
 import { VERTICAL_COLORS_CLASS as FAMILY_COLORS } from '../constants/colors';
+import { ProductPortfolioTree } from './ProductPortfolioTree';
+import { ProductFamilyScorecard } from './ProductFamilyScorecard';
 
 interface FamilyViewProps {
   projects: Project[];
+  opportunities?: Opportunity[];
   efficiencyData?: Record<string, { won: number; spend: number; ratio: number }>;
   viewMode?: 'tabular' | 'graphical';
+  config?: any;
+  totalsLookup?: Record<string, any>;
+  calculateProjectCost?: (p: any, mode: FiscalMode) => {
+    mm: number;
+    directMM: number;
+    contractedMM: number;
+    manpowerCr: number;
+    expenseCr: number;
+    totalCr: number;
+  };
+  activeSubView?: 'portfolio_tree' | 'scorecard' | 'matrix' | 'efficiency';
+  onSubViewChange?: (v: 'portfolio_tree' | 'scorecard' | 'matrix' | 'efficiency') => void;
 }
 
-export const FamilyView: React.FC<FamilyViewProps> = ({ projects, efficiencyData, viewMode = 'tabular' }) => {
+export const FamilyView: React.FC<FamilyViewProps> = ({
+  projects,
+  opportunities = [],
+  efficiencyData,
+  viewMode = 'tabular',
+  config,
+  totalsLookup,
+  calculateProjectCost,
+  activeSubView,
+  onSubViewChange
+}) => {
+  const [internalSubView, setInternalSubView] = useState<'portfolio_tree' | 'scorecard' | 'matrix' | 'efficiency'>('portfolio_tree');
+  const [selectedScorecardFamily, setSelectedScorecardFamily] = useState<string>('');
+  const subView = activeSubView ?? internalSubView;
+  const setSubView = (v: 'portfolio_tree' | 'scorecard' | 'matrix' | 'efficiency') => {
+    setInternalSubView(v);
+    if (onSubViewChange) onSubViewChange(v);
+  };
   const [isFlipped, setIsFlipped] = useState(true);
   const [isCombined, setIsCombined] = useState(false);
   const [showLabels, setShowLabels] = useState(false);
@@ -138,55 +170,143 @@ export const FamilyView: React.FC<FamilyViewProps> = ({ projects, efficiencyData
   };
 
   return (
-    <div className="bg-white p-8 rounded-[2.5rem] border border-slate-200 shadow-sm animate-fadeIn">
-      <div className="flex items-center justify-between mb-8">
-        <div className="flex items-center gap-4">
-          <h3 className="text-xl font-black text-slate-900 uppercase tracking-tighter">
-            {viewMode === 'tabular' ? 'Family View Roadmap' : 'Family Efficiency Chart'}
-          </h3>
-          <div className="flex items-center gap-2">
-            {viewMode === 'tabular' ? (
-              <>
-                <button 
-                  onClick={() => setIsFlipped(!isFlipped)}
-                  className="flex items-center gap-2 px-4 py-2 rounded-full bg-slate-100 hover:bg-slate-200 text-[10px] font-black uppercase tracking-widest text-slate-600 transition-all border border-slate-200 shadow-sm"
-                >
-                  <ArrowLeftRight size={14} />
-                  Flip Axis
-                </button>
-                <button 
-                  onClick={() => setIsCombined(!isCombined)}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all border shadow-sm ${
-                    isCombined 
-                    ? 'bg-indigo-600 text-white border-indigo-700' 
-                    : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border-slate-200'
+    <div className="bg-white p-5 rounded-[2rem] border border-slate-200 shadow-sm animate-fadeIn space-y-4">
+      {(!activeSubView || subView === 'matrix' || subView === 'efficiency') && (
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 pb-3">
+          <div className="flex flex-wrap items-center gap-3">
+            {!activeSubView && (
+              <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200/80">
+                <button
+                  type="button"
+                  onClick={() => setSubView('portfolio_tree')}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wider transition-all ${
+                    subView === 'portfolio_tree'
+                      ? 'bg-white text-[#0082ca] shadow-xs'
+                      : 'text-slate-500 hover:text-slate-800'
                   }`}
                 >
-                  <Layers size={14} />
+                  <FolderTree size={14} />
+                  Portfolio Tree
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSubView('scorecard')}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wider transition-all ${
+                    subView === 'scorecard'
+                      ? 'bg-white text-emerald-700 shadow-xs'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <Award size={14} />
+                  Family Scorecard
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSubView('matrix')}
+                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wider transition-all ${
+                    subView === 'matrix'
+                      ? 'bg-white text-indigo-700 shadow-xs'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <Grid3X3 size={14} />
+                  Generation Matrix
+                </button>
+                {efficiencyData && (
+                  <button
+                    type="button"
+                    onClick={() => setSubView('efficiency')}
+                    className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wider transition-all ${
+                      subView === 'efficiency'
+                        ? 'bg-white text-indigo-700 shadow-xs'
+                        : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    <ScatterIcon size={14} />
+                    Efficiency Chart
+                  </button>
+                )}
+              </div>
+            )}
+
+            {subView === 'matrix' && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-black uppercase tracking-wider text-slate-800 mr-2">
+                  Product Family Generation Matrix
+                </span>
+                <button
+                  onClick={() => setIsFlipped(!isFlipped)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-[10px] font-black uppercase tracking-wider text-slate-600 transition-all border border-slate-200"
+                >
+                  <ArrowLeftRight size={13} />
+                  Flip Axis
+                </button>
+                <button
+                  onClick={() => setIsCombined(!isCombined)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all border ${
+                    isCombined
+                      ? 'bg-indigo-600 text-white border-indigo-700'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border-slate-200'
+                  }`}
+                >
+                  <Layers size={13} />
                   {isCombined ? 'Split View' : 'Combined View'}
                 </button>
-              </>
-            ) : (
-              <button 
-                onClick={() => setShowLabels(!showLabels)}
-                className="flex items-center gap-2 px-4 py-2 rounded-full bg-slate-100 hover:bg-slate-200 text-[10px] font-black uppercase tracking-widest text-slate-600 transition-all border border-slate-200 shadow-sm"
-              >
-                {showLabels ? 'Hide Labels' : 'Show Labels'}
-              </button>
+              </div>
+            )}
+
+            {subView === 'efficiency' && (
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-black uppercase tracking-wider text-slate-800">
+                  Product Family Spend vs Project Count Efficiency
+                </span>
+                <button
+                  onClick={() => setShowLabels(!showLabels)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-[10px] font-black uppercase tracking-wider text-slate-600 transition-all border border-slate-200"
+                >
+                  {showLabels ? 'Hide Labels' : 'Show Labels'}
+                </button>
+              </div>
             )}
           </div>
-        </div>
-        {viewMode === 'tabular' && (
-          <div className="flex gap-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">
-            <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-blue-100/70 border border-blue-200"></div> Carryover</span>
-            <span className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-blue-50/60 border border-blue-200"></div> New</span>
-          </div>
-        )}
-      </div>
 
-      <div className="overflow-x-auto min-h-[500px]">
-        {viewMode === 'tabular' ? (
-          !isFlipped ? (
+          {subView === 'matrix' && (
+            <div className="flex gap-4 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+              <span className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-full bg-blue-100/70 border border-blue-200"></div> Carryover
+              </span>
+              <span className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-full bg-blue-50/60 border border-blue-200"></div> New
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {subView === 'portfolio_tree' ? (
+        <ProductPortfolioTree
+          projects={projects}
+          config={config}
+          totalsLookup={totalsLookup}
+          calculateProjectCost={calculateProjectCost}
+          onSelectFamilyForScorecard={(famName) => {
+            if (famName) setSelectedScorecardFamily(famName);
+            setSubView('scorecard');
+          }}
+        />
+      ) : subView === 'scorecard' ? (
+        <ProductFamilyScorecard
+          projects={projects}
+          opportunities={opportunities}
+          config={config}
+          totalsLookup={totalsLookup}
+          calculateProjectCost={calculateProjectCost}
+          initialSelectedFamily={selectedScorecardFamily}
+        />
+      ) : (
+        <div className="overflow-x-auto min-h-[500px]">
+          {subView === 'matrix' ? (
+            !isFlipped ? (
             <table className="w-full text-left border-collapse table-fixed">
               <thead>
                 <tr>
@@ -346,7 +466,8 @@ export const FamilyView: React.FC<FamilyViewProps> = ({ projects, efficiencyData
             </ResponsiveContainer>
           </div>
         )}
-      </div>
+        </div>
+      )}
     </div>
   );
 };

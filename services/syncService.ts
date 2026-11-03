@@ -12,11 +12,77 @@ const getApiUrl = (config: any, path: string) => {
     if (apiIndex !== -1 && (apiIndex === baseUrl.length - 4 || baseUrl[apiIndex + 4] === '/')) {
       baseUrl = baseUrl.slice(0, apiIndex);
     }
+
+    // If baseUrl is a stale AI Studio preview URL (.run.app) that differs from current origin, use current origin
+    if (typeof window !== 'undefined' && baseUrl.includes('.run.app') && !baseUrl.startsWith(window.location.origin)) {
+      return `${window.location.origin}${path}`;
+    }
     
     return `${baseUrl}${path}`;
   }
   // Standardize relative paths to ensure they resolve against the current origin
   return `${window.location.origin}${path}`;
+};
+
+const fetchWithFallback = async (config: any, path: string, init?: RequestInit): Promise<Response> => {
+  const primaryUrl = getApiUrl(config, path);
+  const localUrl = `${window.location.origin}${path}`;
+  const maxRetries = 2;
+  let lastErr: any = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch(primaryUrl, init);
+      if (res.ok || res.status === 404) {
+        return res;
+      }
+      // If a custom remote URL returned an error (e.g. 401/500/502/503) and differs from local origin, try local origin
+      if (primaryUrl !== localUrl) {
+        const localRes = await fetch(localUrl, {
+          ...init,
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
+        });
+        if (localRes.ok || localRes.status === 404) {
+          return localRes;
+        }
+      }
+      if (attempt === maxRetries) return res;
+    } catch (err) {
+      lastErr = err;
+      if (primaryUrl !== localUrl) {
+        try {
+          const localRes = await fetch(localUrl, {
+            ...init,
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
+          });
+          if (localRes.ok || localRes.status === 404) {
+            return localRes;
+          }
+        } catch (innerErr) {
+          lastErr = innerErr;
+        }
+      }
+    }
+    if (attempt < maxRetries) {
+      await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
+    }
+  }
+  throw lastErr || new Error(`Request failed for ${path}`);
+};
+
+const deduplicateMasterProjects = (list: MasterProject[]): MasterProject[] => {
+  if (!Array.isArray(list)) return [];
+  const seen = new Map<string, MasterProject>();
+  for (const mp of list) {
+    if (!mp) continue;
+    const rawCode = (mp.code || '').toString().trim().toUpperCase();
+    const isGeneric = !rawCode || ['UMD-XXXX', 'XXXX', 'TBD', 'UMD-TBD', 'N/A', 'NA', 'TEMP'].includes(rawCode);
+    const key = isGeneric ? `NAME:${(mp.name || mp.id || '').toString().trim().toUpperCase()}` : `CODE:${rawCode}`;
+    if (key && key !== 'NAME:') {
+      seen.set(key, mp);
+    }
+  }
+  return Array.from(seen.values());
 };
 
 const getHeaders = (config: any) => {
@@ -39,6 +105,9 @@ const formatError = (err: any): string => {
 
 // WebSocket connection for real-time updates
 let socket: WebSocket | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let reconnectAttempts = 0;
 const subscribers = new Set<{ id: string, cb: (data: any) => void }>();
 const clientId = Math.random().toString(36).substring(7);
 let lastConfig: any = null;
@@ -53,15 +122,24 @@ export const getYearKey = (year: string, mode: string = 'Budget'): string => {
 };
 
 const ensureSocket = (config: any) => {
+  if (typeof window === 'undefined') return;
   lastConfig = config;
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   let wsUrl: string;
   
-  if (config?.url && config.url !== 'local') {
+  if (config?.url && config.url !== 'local' && !config.url.includes('.run.app')) {
     wsUrl = config.url.replace(/^http/, 'ws');
-    // Ensure wss if we are on https
+    const apiIndex = wsUrl.lastIndexOf('/api');
+    if (apiIndex !== -1 && (apiIndex === wsUrl.length - 4 || wsUrl[apiIndex + 4] === '/')) {
+      wsUrl = wsUrl.slice(0, apiIndex);
+    }
     if (protocol === 'wss:' && wsUrl.startsWith('ws:')) {
       wsUrl = wsUrl.replace('ws:', 'wss:');
     }
@@ -71,37 +149,60 @@ const ensureSocket = (config: any) => {
     wsUrl = `${protocol}//${window.location.host}/ws`;
   }
   
-  console.log(`🔌 Connecting to WebSocket: ${wsUrl}`);
-  socket = new WebSocket(wsUrl);
+  try {
+    socket = new WebSocket(wsUrl);
+  } catch (err) {
+    socket = null;
+    const delay = Math.min(30000, 3000 * Math.pow(1.5, reconnectAttempts++));
+    reconnectTimer = setTimeout(() => ensureSocket(lastConfig), delay);
+    return;
+  }
   
   socket.onopen = () => {
-    console.log(`✅ WebSocket connected to ${wsUrl}`);
+    reconnectAttempts = 0;
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: 'IDENTIFY', clientId }));
     }
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = setInterval(() => {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        try {
+          socket.send(JSON.stringify({ type: 'PING' }));
+        } catch (e) {}
+      }
+    }, 25000);
   };
 
-  socket.onerror = (error) => {
-    console.error(`❌ WebSocket error for ${wsUrl}:`, error);
+  socket.onerror = () => {
+    // Transient WebSocket errors are followed by onclose which handles reconnection silently
   };
 
   socket.onclose = () => {
-    console.log(`🔌 WebSocket closed. Reconnecting in 5s...`);
-    setTimeout(() => ensureSocket(config), 5000);
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    socket = null;
+    if (!reconnectTimer && subscribers.size > 0) {
+      const delay = Math.min(30000, 3000 * Math.pow(1.5, reconnectAttempts++));
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        ensureSocket(lastConfig);
+      }, delay);
+    }
   };
   
   socket.onmessage = async (event) => {
     try {
       const message = JSON.parse(event.data);
       
-      if (message.senderId === clientId) {
+      if (message.type === 'PONG' || message.senderId === clientId) {
         return;
       }
 
       if (message.type === 'UPDATE') {
         let data = message.data;
         if (!data) {
-          console.log(`🔄 Fetching update for ${message.id} due to large payload notification`);
           data = await syncService.loadFromServer(lastConfig, message.id, 'RAW_ID');
         }
 
@@ -113,11 +214,8 @@ const ensureSocket = (config: any) => {
           });
         }
       } else if (message.type === 'BATCH_UPDATE') {
-        console.log(`🔄 Handling BATCH_UPDATE for ${message.ids?.length} IDs`);
         const ids = message.ids || [];
         
-        // We can't easily batch loadFromServer without a new endpoint, 
-        // but we can at least process the global-budget-state separately if present
         for (const id of ids) {
           const data = await syncService.loadFromServer(lastConfig, id, 'RAW_ID');
           if (data) {
@@ -130,7 +228,7 @@ const ensureSocket = (config: any) => {
         }
       }
     } catch (e) {
-      console.error('WS Parse Error', e);
+      // Ignore malformed WS messages
     }
   };
 };
@@ -230,22 +328,28 @@ export const syncService = {
   loadResources: async (
     config: any
   ): Promise<Employee[]> => {
-    const url = getApiUrl(config, `${API_BASE}/budgets/global-resources`);
-    const response = await fetch(url, {
-      headers: getHeaders(config)
-    });
-    if (response.status === 404) return [];
-    if (!response.ok) throw new Error('Failed to load resources');
-    
-    // Check if response is JSON
-    const contentType = response.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-      console.warn(`API not available or invalid response format at ${url}. Returning empty resources.`);
+    try {
+      const response = await fetchWithFallback(config, `${API_BASE}/budgets/global-resources`, {
+        headers: getHeaders(config)
+      });
+      if (response.status === 404) return [];
+      if (!response.ok) {
+        console.warn(`Resources endpoint returned status ${response.status}. Returning empty resources.`);
+        return [];
+      }
+      
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        console.warn(`API not available or invalid response format for resources. Returning empty resources.`);
+        return [];
+      }
+      
+      const result = await response.json();
+      return result?.data?.employees || [];
+    } catch (err) {
+      console.warn('Fallback: unable to load remote resources, using local state.', err);
       return [];
     }
-    
-    const result = await response.json();
-    return result.data?.employees || [];
   },
 
   saveMasterProjects: async (
@@ -253,7 +357,8 @@ export const syncService = {
     masterProjects: MasterProject[]
   ): Promise<{ success: boolean; timestamp: number }> => {
     const url = getApiUrl(config, `${API_BASE}/budgets`);
-    const pruned = prunePayloadData({ masterProjects }) || {};
+    const deduped = deduplicateMasterProjects(masterProjects);
+    const pruned = prunePayloadData({ masterProjects: deduped }) || { masterProjects: [] };
     const response = await postWithGzip(url, getHeaders(config), { id: 'global-master-projects', data: pruned });
 
     if (!response.ok) {
@@ -265,18 +370,25 @@ export const syncService = {
   loadMasterProjects: async (
     config: any
   ): Promise<MasterProject[]> => {
-    const url = getApiUrl(config, `${API_BASE}/budgets/global-master-projects`);
-    const response = await fetch(url, {
-      headers: getHeaders(config)
-    });
-    if (response.status === 404) return [];
-    if (!response.ok) throw new Error('Failed to load master projects');
-    
-    const contentType = response.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) return [];
-    
-    const result = await response.json();
-    return result.data?.masterProjects || [];
+    try {
+      const response = await fetchWithFallback(config, `${API_BASE}/budgets/global-master-projects`, {
+        headers: getHeaders(config)
+      });
+      if (response.status === 404) return [];
+      if (!response.ok) {
+        console.warn(`Master projects endpoint returned status ${response.status}. Returning empty list.`);
+        return [];
+      }
+      
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) return [];
+      
+      const result = await response.json();
+      return deduplicateMasterProjects(result?.data?.masterProjects || []);
+    } catch (err) {
+      console.warn('Fallback: unable to load remote master projects, using local state.', err);
+      return [];
+    }
   },
 
   saveBatchToServer: async (

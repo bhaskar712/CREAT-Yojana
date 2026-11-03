@@ -105,9 +105,12 @@ export const normalizeVertical = (raw: string | undefined | null): string => {
   if (clean === 'ecs2' || lower === 'ecs 2') return 'ECS-2';
   if (clean === 'coc') return 'CoC';
   if (clean === 'atg') return 'ATG';
+  if (clean === 'aeg') return 'AEG';
+  if (clean === 'dcb') return 'DCB';
   if (clean === 'las') return 'LAS';
   if (clean === 'initia') return 'INITIA';
   if (clean === 'scs') return 'SCS';
+  if (clean === 'support') return 'Support';
   return trimmed;
 };
 
@@ -122,9 +125,12 @@ export const normalizeDepartment = (raw: string | undefined | null): string => {
   if (clean === 'swcoc' || lower === 'sw coc' || lower === 'sw') return 'SW_CoC';
   if (clean === 'mechcoc' || lower === 'mech coc' || lower === 'mech') return 'Mech_CoC';
   if (clean === 'atg') return 'ATG';
+  if (clean === 'aeg') return 'AEG';
+  if (clean === 'dcb') return 'DCB';
   if (clean === 'las') return 'LAS';
   if (clean === 'initia') return 'INITIA';
   if (clean === 'scs') return 'SCS';
+  if (clean === 'support') return 'Support';
   return trimmed;
 };
 

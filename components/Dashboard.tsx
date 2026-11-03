@@ -551,10 +551,10 @@ const Dashboard: React.FC<DashboardProps> = ({
               if (isContractedExp) {
                 const mmObj = groupedData['Contracted Employee'] || groupedData['Contracted Employee (MM)'] || {};
                 if ((mmObj[i] || 0) === 0) {
-                  contractedExp += Math.abs(val) > 1000 ? val / 10000000 : val;
+                  contractedExp += val / 10000000;
                 }
               } else {
-                otherExp += Math.abs(val) > 1000 ? val / 10000000 : val;
+                otherExp += val / 10000000;
               }
             }
           }
@@ -799,14 +799,14 @@ const Dashboard: React.FC<DashboardProps> = ({
           } else if (isExpense && !isContractedExp) {
             if (!isHolidayLeave) {
               if (!expenseData[cat]) expenseData[cat] = new Array(numMonths).fill(0);
-              const cost = Math.abs(v) > 1000 ? v / 10000000 : v;
+              const cost = v / 10000000;
               expenseData[cat][i] += cost;
               totalExpenseCr[i] += cost;
             }
           } else if (isContractedExp) {
             const mmArr = Array.isArray(dataSource['Contracted Employee'] || dataSource['Contracted Employee (MM)']) ? (dataSource['Contracted Employee'] || dataSource['Contracted Employee (MM)']) : [];
             if ((mmArr[globalIdx] || 0) === 0) {
-              const cost = Math.abs(v) > 1000 ? v / 10000000 : v;
+              const cost = v / 10000000;
               if (!expenseData[cat]) expenseData[cat] = new Array(numMonths).fill(0);
               expenseData[cat][i] += cost;
               totalManpowerCr[i] += cost;
@@ -1037,7 +1037,7 @@ const Dashboard: React.FC<DashboardProps> = ({
               rollup[cat] = (rollup[cat] || 0) + val;
               rollup.totalMM += val;
             } else if (catKind === 'EXPENSE') {
-              const expVal = Math.abs(val) > 1000 ? val / 10000000 : val;
+              const expVal = val / 10000000;
               rollup['Exp_' + cat] = (rollup['Exp_' + cat] || 0) + expVal;
               rollup.totalExpOnlyCR += expVal;
             }

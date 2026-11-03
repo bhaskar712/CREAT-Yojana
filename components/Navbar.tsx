@@ -1,7 +1,6 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
-import { Logo } from './Logo';
 import { AppTab, FiscalMode, FiscalYear, User, MasterConfig, Project, SyncStatus, SyncConfig } from '../types';
 
 interface NavbarProps {
@@ -64,12 +63,17 @@ export const Navbar: React.FC<NavbarProps> = ({
   setSeatAllocationSubTab
 }) => {
   const [isFYOpen, setIsFYOpen] = useState(false);
+  const [isPmoListMenuOpen, setIsPmoListMenuOpen] = useState(false);
   const fyDropdownRef = useRef<HTMLDivElement>(null);
+  const pmoListMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (fyDropdownRef.current && !fyDropdownRef.current.contains(event.target as Node)) {
         setIsFYOpen(false);
+      }
+      if (pmoListMenuRef.current && !pmoListMenuRef.current.contains(event.target as Node)) {
+        setIsPmoListMenuOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -103,7 +107,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     <nav className="bg-white border-b border-slate-200 sticky top-0 z-[1000] px-4 sm:px-8 h-20 shrink-0">
       <div className="max-w-full mx-auto h-full flex items-center">
         <div className="flex-1 flex items-center space-x-4">
-          <Logo size="md" onClick={() => { navigate('/'); updateContext(AppTab.HOME); }} />
+          
           
           {activeTab !== AppTab.HOME && (
             <div className="flex items-center space-x-3 animate-fadeIn ml-4 pl-4 border-l border-slate-200 h-8">
@@ -144,6 +148,101 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </button>
               ))}
             </div>
+          ) : (activeTab === AppTab.PMO || activeTab === AppTab.PMO_ANALYTICS) ? (
+            <div className="bg-slate-100/70 p-1.5 rounded-full flex items-center gap-1 border border-slate-200/70">
+              {/* Consolidated Project List Tab with Menu & Inline Mode Switcher */}
+              <div className="relative flex items-center" ref={pmoListMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (processorSubTab === 'analytics' || activeTab === AppTab.PMO_ANALYTICS) {
+                      setProcessorSubTab('list');
+                      updateContext(AppTab.PMO, processorMode === 'Budget' ? 'Budget' : 'Actuals');
+                    } else {
+                      setIsPmoListMenuOpen(prev => !prev);
+                    }
+                  }}
+                  onMouseEnter={() => setIsPmoListMenuOpen(true)}
+                  className={`px-5 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-2 ${
+                    processorSubTab === 'list' && activeTab === AppTab.PMO
+                      ? 'bg-white text-indigo-600 shadow-sm'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <span>Project List</span>
+                  {processorSubTab === 'list' && activeTab === AppTab.PMO && (
+                    <span className={`px-2 py-0.5 rounded-full text-[8px] font-black uppercase ${
+                      processorMode === 'Budget'
+                        ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                        : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    }`}>
+                      {processorMode === 'Budget' ? 'Budget' : 'Actuals'}
+                    </span>
+                  )}
+                  <ChevronDown className="w-3 h-3 opacity-60" />
+                </button>
+
+                {isPmoListMenuOpen && (
+                  <div
+                    onMouseLeave={() => setIsPmoListMenuOpen(false)}
+                    className="absolute top-full left-0 mt-1.5 w-48 bg-white border border-slate-200 rounded-2xl shadow-xl py-1.5 z-[1100] animate-fadeIn"
+                  >
+                    <div className="px-3 py-1 text-[8px] font-black uppercase tracking-widest text-slate-400">
+                      Select Project List Mode
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProcessorSubTab('list');
+                        updateContext(AppTab.PMO, 'Budget');
+                        setIsPmoListMenuOpen(false);
+                      }}
+                      className={`w-full px-3.5 py-2 text-left text-[10px] font-black uppercase tracking-wider flex items-center justify-between hover:bg-indigo-50 transition-colors ${
+                        processorSubTab === 'list' && processorMode === 'Budget'
+                          ? 'text-indigo-600 bg-indigo-50/50'
+                          : 'text-slate-700'
+                      }`}
+                    >
+                      <span>Budget Project List</span>
+                      {processorSubTab === 'list' && processorMode === 'Budget' && <Check className="w-3.5 h-3.5 text-indigo-600" />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProcessorSubTab('list');
+                        updateContext(AppTab.PMO, 'Actuals');
+                        setIsPmoListMenuOpen(false);
+                      }}
+                      className={`w-full px-3.5 py-2 text-left text-[10px] font-black uppercase tracking-wider flex items-center justify-between hover:bg-indigo-50 transition-colors ${
+                        processorSubTab === 'list' && processorMode === 'Actuals'
+                          ? 'text-indigo-600 bg-indigo-50/50'
+                          : 'text-slate-700'
+                      }`}
+                    >
+                      <span>Actuals Project List</span>
+                      {processorSubTab === 'list' && processorMode === 'Actuals' && <Check className="w-3.5 h-3.5 text-indigo-600" />}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Analytics Hub Tab */}
+              <button
+                type="button"
+                onClick={() => {
+                  setProcessorSubTab('analytics');
+                  updateContext(AppTab.PMO_ANALYTICS);
+                  setIsPmoListMenuOpen(false);
+                }}
+                className={`px-7 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${
+                  processorSubTab === 'analytics' || activeTab === AppTab.PMO_ANALYTICS
+                    ? 'bg-white text-indigo-600 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                Analytics
+              </button>
+            </div>
           ) : (activeTab !== AppTab.HOME && activeTab !== AppTab.HR_RESOURCES && activeTab !== AppTab.CONFIG && activeTab !== AppTab.MASTER_PROJECTS) && (
             <div className="bg-slate-100/50 p-1.5 rounded-full flex items-center space-x-1 border border-slate-200/50">
               {mainTabs.filter(t => t.visible !== false).map(tab => (
@@ -160,61 +259,20 @@ export const Navbar: React.FC<NavbarProps> = ({
                       return;
                     }
 
-                    const isTabActive = (activeTab === tab.id) || 
-                                       ((activeTab === AppTab.PMO || activeTab === AppTab.PMO_ANALYTICS) && (
-                                         (tab.id === 'pmo_budget' && processorSubTab === 'list' && processorMode === 'Budget') ||
-                                         (tab.id === 'pmo_actual' && processorSubTab === 'list' && processorMode === 'Actuals') ||
-                                         (tab.id === 'pmo_analytics' && processorSubTab === 'analytics') ||
-                                         (tab.id === AppTab.ENTRY && processorSubTab === 'list') ||
-                                         (tab.id === AppTab.DASHBOARD && processorSubTab === 'analytics')
-                                       ));
-                    
+                    const isTabActive = (activeTab === tab.id);
                     if (!isTabActive) {
-                      if (activeTab === AppTab.PMO || activeTab === AppTab.PMO_ANALYTICS) {
-                        if (tab.id === 'pmo_budget') {
-                          setProcessorSubTab('list');
-                          updateContext(AppTab.PMO, 'Budget');
-                        } else if (tab.id === 'pmo_actual') {
-                          setProcessorSubTab('list');
-                          updateContext(AppTab.PMO, 'Actuals');
-                        } else if (tab.id === 'pmo_analytics') {
-                          setProcessorSubTab('analytics');
-                          updateContext(AppTab.PMO_ANALYTICS);
-                        } else if (tab.id === AppTab.ENTRY) {
-                          setProcessorSubTab('list');
-                        } else if (tab.id === AppTab.DASHBOARD) {
-                          setProcessorSubTab('analytics');
-                        } else {
-                          updateContext(tab.id as any);
-                        }
-                      } else {
-                        updateContext(tab.id as any);
-                      }
+                      updateContext(tab.id as any);
                     }
                   }} 
                   className={`px-8 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${
                     (activeTab === AppTab.DCBA_PORTAL && dcbaViewMode === tab.id) ||
                     (activeTab === AppTab.SEAT_ALLOCATION && seatAllocationSubTab === tab.id) ||
-                    (activeTab !== AppTab.DCBA_PORTAL && activeTab !== AppTab.SEAT_ALLOCATION && (
-                      (activeTab === tab.id) || 
-                      ((activeTab === AppTab.PMO || activeTab === AppTab.PMO_ANALYTICS) && (
-                        (tab.id === 'pmo_budget' && processorSubTab === 'list' && processorMode === 'Budget') ||
-                        (tab.id === 'pmo_actual' && processorSubTab === 'list' && processorMode === 'Actuals') ||
-                        (tab.id === 'pmo_analytics' && processorSubTab === 'analytics') ||
-                        (tab.id === AppTab.ENTRY && processorSubTab === 'list') ||
-                        (tab.id === AppTab.DASHBOARD && processorSubTab === 'analytics')
-                      ))
-                    ))
+                    (activeTab !== AppTab.DCBA_PORTAL && activeTab !== AppTab.SEAT_ALLOCATION && activeTab === tab.id)
                       ? 'bg-white text-indigo-600 shadow-md' 
                       : 'text-slate-400 hover:text-slate-600'
                   }`}
                 >
-                  <div className="flex flex-col items-center justify-center -my-1">
-                    <span>{tab.label}</span>
-                    {(tab.id === 'pmo_budget' || tab.id === 'pmo_actual') && (
-                      <span className="text-[9px] font-medium tracking-tight normal-case opacity-70 leading-none mt-0.5 whitespace-nowrap">(Project List)</span>
-                    )}
-                  </div>
+                  <span>{tab.label}</span>
                 </button>
               ))}
             </div>

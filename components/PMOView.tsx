@@ -27,6 +27,7 @@ interface PMOViewProps {
   setDeletionTarget: (target: DeletionTarget | null) => void;
   activeTab?: 'list' | 'analytics';
   lastUpdated?: number;
+  totalsLookup?: Record<string, any>;
 }
 
 export const PMOView: React.FC<PMOViewProps> = ({
@@ -52,7 +53,8 @@ export const PMOView: React.FC<PMOViewProps> = ({
   employees,
   isAdmin,
   setDeletionTarget,
-  lastUpdated
+  lastUpdated,
+  totalsLookup
 }) => {
   return (
     <div className="w-full h-full animate-fadeIn">
@@ -77,6 +79,7 @@ export const PMOView: React.FC<PMOViewProps> = ({
         employees={employees}
         isAdmin={isAdmin}
         onDeleteAll={() => setDeletionTarget({ type: 'projects', id: 'all', name: 'All Projects' })}
+        totalsLookup={totalsLookup}
       />
     </div>
   );

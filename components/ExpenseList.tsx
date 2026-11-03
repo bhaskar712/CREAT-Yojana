@@ -357,7 +357,7 @@ export const ExpenseList: React.FC<ExpenseListProps> = ({
                 rawVal = obj[globalIdx] ?? obj[i] ?? obj[months[i]] ?? 0;
               }
 
-              const valCr = typeof rawVal === 'number' ? (Math.abs(rawVal) > 10 ? rawVal / 10000000 : rawVal) : 0;
+              const valCr = typeof rawVal === 'number' ? rawVal / 10000000 : 0;
               clubbedGroupMap[groupKey].monthly[i] += valCr;
             });
           });
@@ -404,7 +404,7 @@ export const ExpenseList: React.FC<ExpenseListProps> = ({
               const obj = rawRow as any;
               rawVal = obj[globalIdx] ?? obj[i] ?? obj[months[i]] ?? 0;
             }
-            return typeof rawVal === 'number' ? (Math.abs(rawVal) > 10 ? rawVal / 10000000 : rawVal) : 0;
+            return typeof rawVal === 'number' ? rawVal / 10000000 : 0;
           });
 
           const totalCatCr = monthlyCatTotal.reduce((a, b) => a + b, 0);
