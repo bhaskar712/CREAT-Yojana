@@ -1365,10 +1365,10 @@ const PMO: React.FC<PMOProps> = ({
           const mmRow = getAuthoritativeRowUI(p as any, 'Contracted Employee', targetKey);
           rowArray = ensureArray(mmRow, MAX_MONTHS).map(mm => isHolidayLeave ? 0 : Math.round(((mm * contractedRate * hpm) / 10000000) * 100) / 100);
         } else {
-          rowArray = ensureArray(rawRow || [], MAX_MONTHS).map(v => isHolidayLeave ? 0 : Math.round(v * 100) / 100);
+          rowArray = ensureArray(rawRow || [], MAX_MONTHS).map(v => isHolidayLeave ? 0 : Math.round((v / 10000000) * 100) / 100);
         }
       } else {
-        rowArray = ensureArray(rawRow || [], MAX_MONTHS).map(v => isHolidayLeave ? 0 : Math.round(v * 100) / 100);
+        rowArray = ensureArray(rawRow || [], MAX_MONTHS).map(v => isHolidayLeave ? 0 : Math.round((v / 10000000) * 100) / 100);
       }
       
       const sliced = months.map((_, i) => rowArray[monthIndices[i]] || 0);
@@ -1386,7 +1386,7 @@ const PMO: React.FC<PMOProps> = ({
     ).map(cat => {
       const arr = getAuthoritativeRowUI(p as any, cat, targetKey);
       const sliced = months.map((_, i) => arr[monthIndices[i]] || 0);
-      const slicedCost = sliced.map(v => isHolidayLeave ? 0 : Math.round(v * 100) / 100);
+      const slicedCost = sliced.map(v => isHolidayLeave ? 0 : Math.round((v / 10000000) * 100) / 100);
       return [cat, slicedCost];
     }));
 
@@ -1425,7 +1425,7 @@ const PMO: React.FC<PMOProps> = ({
             const mappedCat = SKILL_MAPPING[cat] || cat;
             if (mappedCat === 'Contracted Employee' || MANPOWER_CATEGORIES.includes(mappedCat as any)) return acc;
             const arr = getAuthoritativeRowUI(p as any, cat, targetKey);
-            return acc + (arr[globalIdx] || 0);
+            return acc + ((arr[globalIdx] || 0) / 10000000);
         }, 0);
     }).map(v => Math.round(v * 100) / 100);
 
@@ -3664,7 +3664,7 @@ const PMO: React.FC<PMOProps> = ({
                 }
                 const arr = getAuthoritativeRowUI(p as any, cat, dataKey);
                 const val = arr[globalIdx] || 0;
-                return acc + val;
+                return acc + (val / 10000000);
               }, 0);
             }).map(v => Math.round(v * 100) / 100);
             
@@ -3705,7 +3705,7 @@ const PMO: React.FC<PMOProps> = ({
                 const rawRow = (p[dataKey] as any)?.['Contracted Employee Expense'];
                 
                 if (rawRow && Array.isArray(rawRow) && rawRow.some((v) => v !== 0)) {
-                  row = ensureArray(rawRow, MAX_MONTHS).map(v => isHolidayLeave ? 0 : Math.round(v * 100) / 100);
+                  row = ensureArray(rawRow, MAX_MONTHS).map(v => isHolidayLeave ? 0 : Math.round((v / 10000000) * 100) / 100);
                 } else {
                   // Fallback: Check if Contracted Employee has MM, then calculate expense
                   const mmRow = getAuthoritativeRowUI(p as any, 'Contracted Employee', dataKey);
@@ -3715,7 +3715,7 @@ const PMO: React.FC<PMOProps> = ({
                 }
               } else {
                 const arr = getAuthoritativeRowUI(p as any, cat, dataKey);
-                row = arr.map(v => isHolidayLeave ? 0 : Math.round(v * 100) / 100);
+                row = arr.map(v => isHolidayLeave ? 0 : Math.round((v / 10000000) * 100) / 100);
               }
               const sliced = months.map((_, i) => row[monthIndices[i]] || 0);
               return [cat, sliced];
@@ -3730,7 +3730,7 @@ const PMO: React.FC<PMOProps> = ({
             const otherExpenseRowsData = Object.fromEntries(Object.keys(p.expenses || {}).filter(cat => !(EXPENSE_CATEGORIES as readonly string[]).includes(cat) && !(MANPOWER_CATEGORIES as readonly string[]).includes(cat) && !isSummaryOrCalculatedLabel(cat)).map(cat => {
               const arr = getAuthoritativeRowUI(p as any, cat, dataKey);
               const sliced = months.map((_, i) => arr[monthIndices[i]] || 0);
-              const slicedCost = sliced.map(v => isHolidayLeave ? 0 : Math.round(v * 100) / 100);
+              const slicedCost = sliced.map(v => isHolidayLeave ? 0 : Math.round((v / 10000000) * 100) / 100);
               return [cat, slicedCost];
             }));
 
